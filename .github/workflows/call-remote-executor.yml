@@ -1,0 +1,204 @@
+name: Call Remote Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Base URL of the Remote Executor server"
+        required: true
+        type: string
+      script_path:
+        description: "Path to script in the repository to execute remotely"
+        required: false
+        default: ".github/scripts/sample-build.sh"
+        type: string
+      commit_hash:
+        description: "Git commit SHA to execute (defaults to current SHA)"
+        required: false
+        default: ""
+        type: string
+      repository_url:
+        description: "Git repository URL to execute against (defaults to current repository)"
+        required: false
+        default: ""
+        type: string
+      audience:
+        description: "Audience value for OIDC token request (must match server's expected audience)"
+        required: false
+        default: ""
+        type: string
+      concurrency_count:
+        description: "Number of parallel execution requests to dispatch"
+        required: false
+        default: "1"
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # AWS Nitro Attestation PKI root CA certificate (used by NitroTPM)
+  # Downloaded from https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip
+  # Fingerprint: 64:1A:03:21:A3:E2:44:EF:E4:56:46:31:95:D6:06:31:7E:D7:CD:CC:3C:17:56:E0:98:93:F3:C6:8F:79:BB:5B
+  ROOT_CERT_PEM: |
+    -----BEGIN CERTIFICATE-----
+    MIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL
+    MAkGA1UEBhMCVVMxDzANBgNVBAoMBkFtYXpvbjEMMAoGA1UECwwDQVdTMRswGQYD
+    VQQDDBJhd3Mubml0cm8tZW5jbGF2ZXMwHhcNMTkxMDI4MTMyODA1WhcNNDkxMDI4
+    MTQyODA1WjBJMQswCQYDVQQGEwJVUzEPMA0GA1UECgwGQW1hem9uMQwwCgYDVQQL
+    DANBV1MxGzAZBgNVBAMMEmF3cy5uaXRyby1lbmNsYXZlczB2MBAGByqGSM49AgEG
+    BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
+    48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
+    h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
+    R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
+    MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
+    rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
+    IwLz3/Y=
+    -----END CERTIFICATE-----
+  # Expected PCR values for the attestable AMI (PCR4 and PCR7)
+  EXPECTED_PCRS: |
+    {
+      "4": "a5667ce29b1937ac6384459fa063c5815dc94f4a5a09dd539b31cc270a3ca8948ccdc44bdf3069ab64c838025cc20bc2",
+      "7": "98441c7f7625d10058c47683aec486ce311c633235eb555593a7ee791121e3578ae72d04ecef661f272d59058b77af35"
+    }
+
+jobs:
+  call-remote-executor:
+    if: ${{ inputs.concurrency_count == '1' || inputs.concurrency_count == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.server_url }}" ]; then
+            echo "::error::server_url input is required and cannot be empty"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_hash || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run Remote Executor Caller
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/call_remote_executor.py \
+            --server-url "${{ inputs.server_url }}" \
+            --script-path "${{ inputs.script_path || '.github/scripts/sample-build.sh' }}" \
+            --commit-hash "${{ inputs.commit_hash || github.sha }}" \
+            --repository-url "${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}" \
+            --github-token "$GITHUB_TOKEN" \
+            --root-cert-pem "$ROOT_CERT_PEM" \
+            --expected-pcrs "$EXPECTED_PCRS" \
+            --audience "${{ inputs.audience }}"
+
+  prepare-matrix:
+    if: ${{ inputs.concurrency_count != '1' && inputs.concurrency_count != '' }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - name: Generate matrix indices
+        id: generate
+        run: |
+          count=${{ inputs.concurrency_count }}
+          indices=$(python3 -c "import json; print(json.dumps(list(range(1, int('$count') + 1))))")
+          echo "matrix={\"index\":$indices}" >> "$GITHUB_OUTPUT"
+
+  execute:
+    if: ${{ inputs.concurrency_count != '1' && inputs.concurrency_count != '' }}
+    needs: [prepare-matrix]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.server_url }}" ]; then
+            echo "::error::server_url input is required and cannot be empty"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_hash || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run Remote Executor Caller
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/call_remote_executor.py \
+            --server-url "${{ inputs.server_url }}" \
+            --script-path "${{ inputs.script_path || '.github/scripts/sample-build.sh' }}" \
+            --commit-hash "${{ inputs.commit_hash || github.sha }}" \
+            --repository-url "${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}" \
+            --github-token "$GITHUB_TOKEN" \
+            --root-cert-pem "$ROOT_CERT_PEM" \
+            --expected-pcrs "$EXPECTED_PCRS" \
+            --audience "${{ inputs.audience }}" \
+            2>&1 | tee execution-output.txt
+
+      - name: Upload execution output
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-output-${{ matrix.index }}
+          path: execution-output.txt
+
+  verify-isolation:
+    if: ${{ inputs.concurrency_count != '1' && inputs.concurrency_count != '' }}
+    needs: [execute]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_hash || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Download all execution outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: execution-output-*
+          path: outputs
+
+      - name: Collect output files
+        run: |
+          mkdir -p collected-outputs
+          for dir in outputs/execution-output-*/; do
+            index=$(basename "$dir" | sed 's/execution-output-//')
+            cp "$dir/execution-output.txt" "collected-outputs/execution-$index.txt"
+          done
+
+      - name: Verify isolation
+        run: |
+          summary=$(python .github/scripts/verify_isolation.py collected-outputs)
+          echo "$summary"
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+          fi
