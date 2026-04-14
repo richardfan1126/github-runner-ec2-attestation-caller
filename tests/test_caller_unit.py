@@ -2082,3 +2082,75 @@ class TestIsolationVerificationEdgeCases:
             verify_isolation_directory(str(tmp_path))
         assert "execution-1" in exc_info.value.message.lower()
         assert "filesystem isolation" in exc_info.value.message.lower() or "ISOLATION_FILE" in exc_info.value.details.get("test", "")
+
+
+class TestPackageDirectoryStructure:
+    """Unit tests for call_remote_executor package directory structure.
+    Validates: Requirement 1.10"""
+
+    PACKAGE_DIR = os.path.join(
+        os.path.dirname(__file__), "..", ".github", "scripts", "call_remote_executor"
+    )
+    EXPECTED_MODULES = [
+        "__init__.py",
+        "__main__.py",
+        "errors.py",
+        "encryption.py",
+        "attestation.py",
+        "caller.py",
+        "cli.py",
+    ]
+
+    def test_package_directory_exists(self):
+        """The call_remote_executor package directory must exist."""
+        assert os.path.isdir(self.PACKAGE_DIR), (
+            f"Expected package directory at {self.PACKAGE_DIR}"
+        )
+
+    @pytest.mark.parametrize("module", EXPECTED_MODULES)
+    def test_package_contains_expected_module(self, module):
+        """Each expected module file must exist inside the package directory."""
+        module_path = os.path.join(self.PACKAGE_DIR, module)
+        assert os.path.isfile(module_path), (
+            f"Expected module {module} in package directory"
+        )
+
+    def test_old_single_file_does_not_exist(self):
+        """The old single-file call_remote_executor.py must not exist."""
+        old_path = os.path.join(
+            os.path.dirname(__file__), "..", ".github", "scripts", "call_remote_executor.py"
+        )
+        assert not os.path.exists(old_path), (
+            f"Old single-file {old_path} should have been removed"
+        )
+
+
+class TestBuildConfiguration:
+    """Unit tests for build configuration referencing the package directory.
+    Validates: Requirements 1.9, 1.14"""
+
+    def test_root_pyproject_references_package_directory(self):
+        """Root pyproject.toml must reference the package directory, not a single .py file."""
+        pyproject_path = os.path.join(
+            os.path.dirname(__file__), "..", "pyproject.toml"
+        )
+        content = open(pyproject_path).read()
+        # Must reference the package directory path
+        assert "call_remote_executor" in content
+        # Must NOT reference the old single-file path
+        assert "call_remote_executor.py" not in content
+
+    def test_workflow_yaml_uses_package_invocation(self):
+        """Workflow YAML must invoke the caller as a package (no .py suffix)."""
+        workflow_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            ".github",
+            "workflows",
+            "call-remote-executor.yml",
+        )
+        content = open(workflow_path).read()
+        # Must contain the package invocation
+        assert "python .github/scripts/call_remote_executor" in content
+        # Must NOT contain the old single-file invocation
+        assert "call_remote_executor.py" not in content

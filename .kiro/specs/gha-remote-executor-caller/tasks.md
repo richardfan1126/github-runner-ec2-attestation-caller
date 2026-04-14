@@ -930,18 +930,18 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify `RemoteExecutorCaller` retains all delegation methods (`validate_attestation`, `validate_output_attestation`, `_verify_certificate_chain`, `_verify_cose_signature`, `_validate_pcrs`, `_verify_nonce`, `_decode_cose_sign1`)
     - **Validates: Requirements 1.11, 1.12, 1.13**
 
-- [ ] 52. Write unit tests for module split structure
-  - [ ] 52.1 Write unit tests for package directory structure
+- [x] 52. Write unit tests for module split structure
+  - [x] 52.1 Write unit tests for package directory structure
     - Test `.github/scripts/call_remote_executor/` is a directory containing `__init__.py`, `__main__.py`, `errors.py`, `encryption.py`, `attestation.py`, `caller.py`, `cli.py`
     - Test old single-file `.github/scripts/call_remote_executor.py` does not exist
     - _Requirements: 1.10_
 
-  - [ ] 52.2 Write unit tests for build configuration
+  - [x] 52.2 Write unit tests for build configuration
     - Test root `pyproject.toml` references package directory, not single-file path
     - Test workflow YAML uses `python .github/scripts/call_remote_executor` (no `.py`)
     - _Requirements: 1.9, 1.14_
 
-- [ ] 53. Final checkpoint - Ensure all module split tests pass
+- [x] 53. Final checkpoint - Ensure all module split tests pass
   - Run full test suite and confirm no regressions
 
 ## Notes
