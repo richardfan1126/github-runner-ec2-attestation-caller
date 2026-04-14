@@ -41,7 +41,7 @@ Trigger the workflow via `workflow_dispatch` from the GitHub Actions UI or API.
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `server_url` | Yes | — | Base URL of the Remote Executor server (e.g., `http://203.0.113.42:8080`) |
-| `script_path` | No | `.github/scripts/sample-build.sh` | Path to the script in the repository to execute remotely |
+| `script_path` | No | `scripts/sample-build.sh` | Path to the script in the repository to execute remotely |
 | `commit_hash` | No | Current SHA | Git commit SHA to execute |
 | `repository_url` | No | Current repository | Git repository URL |
 | `audience` | No | — | OIDC audience value (must match the server's `EXPECTED_AUDIENCE` config) |

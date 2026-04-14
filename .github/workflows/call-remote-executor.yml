@@ -10,7 +10,7 @@ on:
       script_path:
         description: "Path to script in the repository to execute remotely"
         required: false
-        default: ".github/scripts/sample-build.sh"
+        default: "scripts/sample-build.sh"
         type: string
       commit_hash:
         description: "Git commit SHA to execute (defaults to current SHA)"
@@ -94,7 +94,7 @@ jobs:
         run: |
           python .github/scripts/call_remote_executor.py \
             --server-url "${{ inputs.server_url }}" \
-            --script-path "${{ inputs.script_path || '.github/scripts/sample-build.sh' }}" \
+            --script-path "${{ inputs.script_path || 'scripts/sample-build.sh' }}" \
             --commit-hash "${{ inputs.commit_hash || github.sha }}" \
             --repository-url "${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}" \
             --github-token "$GITHUB_TOKEN" \
@@ -148,7 +148,7 @@ jobs:
         run: |
           python .github/scripts/call_remote_executor.py \
             --server-url "${{ inputs.server_url }}" \
-            --script-path "${{ inputs.script_path || '.github/scripts/sample-build.sh' }}" \
+            --script-path "${{ inputs.script_path || 'scripts/sample-build.sh' }}" \
             --commit-hash "${{ inputs.commit_hash || github.sha }}" \
             --repository-url "${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}" \
             --github-token "$GITHUB_TOKEN" \

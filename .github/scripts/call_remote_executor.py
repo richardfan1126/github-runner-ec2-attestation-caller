@@ -1178,7 +1178,7 @@ def main():
     """CLI entry point for the Remote Executor Caller."""
     parser = argparse.ArgumentParser(description="GitHub Actions Remote Executor Caller")
     parser.add_argument("--server-url", required=True, help="Base URL of the Remote Executor server")
-    parser.add_argument("--script-path", default=".github/scripts/sample-build.sh", help="Path to script in the repository")
+    parser.add_argument("--script-path", default="scripts/sample-build.sh", help="Path to script in the repository")
     parser.add_argument("--commit-hash", default="", help="Git commit SHA to execute")
     parser.add_argument("--repository-url", default="", help="Git repository URL to execute against")
     parser.add_argument("--github-token", default="", help="GitHub token for authentication")

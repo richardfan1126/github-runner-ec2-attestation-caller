@@ -309,7 +309,7 @@ class TestHealthCheckAndExecuteEdgeCases:
                 caller.execute(
                     repository_url="https://github.com/owner/repo",
                     commit_hash="abc123",
-                    script_path=".github/scripts/sample-build.sh",
+                    script_path="scripts/sample-build.sh",
                     github_token="ghp_fake_token",
                 )
             assert exc_info.value.phase == "execute"
@@ -520,7 +520,7 @@ class TestSampleBuildScript:
     """Unit tests for the sample build script."""
 
     SCRIPT_PATH = os.path.join(
-        os.path.dirname(__file__), "..", ".github", "scripts", "sample-build.sh"
+        os.path.dirname(__file__), "..", "scripts", "sample-build.sh"
     )
 
     def test_sample_build_script_exists_and_is_executable(self):

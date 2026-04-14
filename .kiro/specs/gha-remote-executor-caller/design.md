@@ -141,9 +141,10 @@ sequenceDiagram
   workflows/
     call-remote-executor.yml    # workflow_dispatch workflow
   scripts/
-    sample-build.sh             # sample build script for remote execution
     call_remote_executor.py     # Python caller script (HTTP, PQ_Hybrid_KEM, attestation, polling)
     pyproject.toml              # caller dependencies (requests, cbor2, pycose, pyOpenSSL, pycryptodome, cryptography, wolfcrypt-py)
+scripts/
+  sample-build.sh               # sample build script for remote execution
 ```
 
 ## Components and Interfaces
@@ -151,7 +152,7 @@ sequenceDiagram
 ### 1. GitHub Actions Workflow (`call-remote-executor.yml`)
 
 Responsibilities:
-- Define `workflow_dispatch` inputs: `server_url` (required), `script_path` (optional, default `.github/scripts/sample-build.sh`), `commit_hash` (optional, default `${{ github.sha }}`), `audience` (optional, specifies the OIDC audience value), `concurrency_count` (optional, default `1`, number of parallel executions)
+- Define `workflow_dispatch` inputs: `server_url` (required), `script_path` (optional, default `scripts/sample-build.sh`), `commit_hash` (optional, default `${{ github.sha }}`), `audience` (optional, specifies the OIDC audience value), `concurrency_count` (optional, default `1`, number of parallel executions)
 - Declare `id-token: write` in the `permissions` block to enable OIDC token requests
 - Hardcode the NitroTPM attestation root CA certificate PEM inline in the workflow YAML as an environment variable, and pass it to the caller script via `--root-cert-pem`
 - Hardcode the expected PCR4 and PCR7 values as a JSON map inline in the workflow YAML, and pass it to the caller script via `--expected-pcrs`
@@ -449,7 +450,7 @@ class CallerError(Exception):
         self.details = details or {}
 ```
 
-### 3. Sample Build Script (`.github/scripts/sample-build.sh`)
+### 3. Sample Build Script (`scripts/sample-build.sh`)
 
 ```bash
 #!/usr/bin/env bash
@@ -674,7 +675,7 @@ Validation steps for output integrity attestation (`validate_output_attestation`
 | Input | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `server_url` | string | yes | — | Base URL of the Remote Executor server |
-| `script_path` | string | no | `.github/scripts/sample-build.sh` | Path to script in the repository |
+| `script_path` | string | no | `scripts/sample-build.sh` | Path to script in the repository |
 | `commit_hash` | string | no | `${{ github.sha }}` | Git commit SHA to execute |
 | `audience` | string | no | — | Audience value for OIDC token request, must match server's expected audience |
 | `concurrency_count` | string | no | `1` | Number of parallel execution requests to dispatch for isolation testing |
@@ -737,7 +738,7 @@ Plaintext payload (before encryption):
 {
   "repository_url": "https://github.com/owner/repo",
   "commit_hash": "abc123...",
-  "script_path": ".github/scripts/sample-build.sh",
+  "script_path": "scripts/sample-build.sh",
   "github_token": "ghp_...",
   "oidc_token": "<jwt_token>",
   "nonce": "<random_hex_string>"

@@ -213,7 +213,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
 
 - [x] 10. Create GitHub Actions workflow and sample build script
   - [x] 10.1 Create `.github/workflows/call-remote-executor.yml`
-    - Define `workflow_dispatch` trigger with inputs: `server_url` (required), `script_path` (optional, default `.github/scripts/sample-build.sh`), `commit_hash` (optional, default `${{ github.sha }}`)
+    - Define `workflow_dispatch` trigger with inputs: `server_url` (required), `script_path` (optional, default `scripts/sample-build.sh`), `commit_hash` (optional, default `${{ github.sha }}`)
     - Hardcode the NitroTPM attestation root CA certificate PEM inline as a multi-line environment variable or step output
     - Hardcode the expected PCR4 and PCR7 values as a JSON map `{"4": "<hex>", "7": "<hex>"}` inline in the workflow
     - Validate `server_url` is not empty, fail with clear error if it is
@@ -223,7 +223,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Write `$GITHUB_STEP_SUMMARY` from the caller script output
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 7.7_
 
-  - [x] 10.2 Create `.github/scripts/sample-build.sh`
+  - [x] 10.2 Create `scripts/sample-build.sh`
     - Create shell script with `#!/usr/bin/env bash` and `set -euo pipefail`
     - Output hostname, date, kernel version, user, and working directory
     - Exit with code 0
@@ -589,12 +589,12 @@ Implement the client-side caller for the Remote Executor system: a Python script
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 33. Update sample build script with execution marker and isolation tests
-  - [x] 33.1 Add execution marker generation to `.github/scripts/sample-build.sh`
+  - [x] 33.1 Add execution marker generation to `scripts/sample-build.sh`
     - Generate a unique marker at runtime via `cat /proc/sys/kernel/random/uuid`
     - Echo `MARKER:${EXECUTION_MARKER}` on a dedicated stdout line
     - _Requirements: 2.5, 2.6_
 
-  - [x] 33.2 Add filesystem isolation test to `.github/scripts/sample-build.sh`
+  - [x] 33.2 Add filesystem isolation test to `scripts/sample-build.sh`
     - Generate a unique random string via `cat /proc/sys/kernel/random/uuid`
     - Write the random string to `/tmp/isolation-test.txt`
     - Sleep for 2 seconds
@@ -602,7 +602,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Output `ISOLATION_FILE:PASS` if values match, `ISOLATION_FILE:FAIL` if they differ
     - _Requirements: 2.7, 2.8, 2.9, 2.14_
 
-  - [x] 33.3 Add process isolation test to `.github/scripts/sample-build.sh`
+  - [x] 33.3 Add process isolation test to `scripts/sample-build.sh`
     - Start a dummy long-running background process with a unique name derived from the execution marker (e.g., `isolation-probe-${EXECUTION_MARKER}`)
     - Use `exec -a` to set the process name, then `pgrep -c -f` to count matching processes
     - Output `ISOLATION_PROCESS:PASS` if exactly one matching process is visible, `ISOLATION_PROCESS:FAIL` otherwise

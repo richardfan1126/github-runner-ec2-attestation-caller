@@ -368,7 +368,7 @@ class TestExecuteHTTPErrorPropagation:
                 caller.execute(
                     repository_url="https://github.com/owner/repo",
                     commit_hash="abc123",
-                    script_path=".github/scripts/sample-build.sh",
+                    script_path="scripts/sample-build.sh",
                     github_token="ghp_test_token",
                 )
             assert exc_info.value.phase == "execute"
