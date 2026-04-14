@@ -12,8 +12,11 @@ The caller includes:
 
 1. **GitHub Actions Workflow**: A `workflow_dispatch`-triggered workflow that orchestrates the entire attest-encrypt-execute-poll-verify cycle against the Remote Executor server, with support for dispatching multiple concurrent executions to demonstrate isolation.
 2. **Sample Build Script**: A sample script included in the repository that the Remote Executor server will fetch and execute. The script generates a unique execution marker at runtime and performs filesystem and process isolation tests to enable isolation verification.
-3. **Attestation Validation Logic**: Client-side logic to decode, cryptographically verify, and validate COSE Sign1-encoded NitroTPM attestation documents returned by the server, including certificate chain (PKI) validation, COSE signature verification, PCR value validation, and output integrity verification.
-4. **PQ_Hybrid_KEM Encryption Logic**: Client-side X25519 key generation, ML-KEM-768 encapsulation (via `wolfcrypt-py`), ECDH key agreement, combined HKDF-SHA256 key derivation with `info=b"pq-hybrid-shared-key"`, and AES-256-GCM encryption/decryption for all request and response payloads on encrypted endpoints.
+3. **Attestation Validation Logic**: Client-side logic to decode, cryptographically verify, and validate COSE Sign1-encoded NitroTPM attestation documents returned by the server, including certificate chain (PKI) validation, COSE signature verification, PCR value validation, and output integrity verification. Implemented as standalone functions in a dedicated `attestation` module.
+4. **PQ_Hybrid_KEM Encryption Logic**: Client-side X25519 key generation, ML-KEM-768 encapsulation (via `wolfcrypt-py`), ECDH key agreement, combined HKDF-SHA256 key derivation with `info=b"pq-hybrid-shared-key"`, and AES-256-GCM encryption/decryption for all request and response payloads on encrypted endpoints. Implemented as a dedicated `ClientEncryption` class in an `encryption` module.
+5. **Isolation Verification Logic**: Client-side logic to parse execution output markers and isolation test results, verify marker uniqueness across concurrent executions, and generate verification summaries. Implemented as a single-file Python script `.github/scripts/verify_isolation.py`.
+
+The caller script is organized as a Python package (not a single file) under `.github/scripts/`, with `__init__.py` re-exports preserving backward-compatible import paths and a `__main__.py` module enabling direct package invocation. The isolation verification script remains a single file.
 
 ## Glossary
 
@@ -27,7 +30,7 @@ The caller includes:
 - **CBOR**: Concise Binary Object Representation — the binary encoding format used for attestation documents and COSE structures
 - **NitroTPM**: Trusted Platform Module on the Attestable EC2 instance that signs attestation documents
 - **Server_URL**: The base URL of the Remote Executor server, provided as a `workflow_dispatch` input
-- **Caller_Script**: Python script that implements the HTTP client logic, attestation validation, and polling loop
+- **Caller_Script**: Python package (`.github/scripts/call_remote_executor/`) that implements the HTTP client logic, attestation validation, PQ_Hybrid_KEM encryption, and polling loop. Organized as focused modules (`errors.py`, `encryption.py`, `attestation.py`, `caller.py`, `cli.py`) with an `__init__.py` that re-exports all public symbols and a `__main__.py` for CLI invocation
 - **Output_Digest**: SHA-256 hash of the script output used to verify integrity against the Output_Attestation_Document's user_data field
 - **Root_CA_Certificate**: The NitroTPM attestation root certificate authority PEM, hardcoded in the Caller_Workflow definition, used to anchor the certificate chain validation
 - **Expected_PCRs**: A JSON map of PCR index (integer) to expected hex-encoded PCR value for PCR4 and PCR7, hardcoded in the Caller_Workflow definition, used to validate the attestable AMI's Platform Configuration Registers against known-good values
@@ -69,6 +72,12 @@ The caller includes:
 6. THE Caller_Workflow SHALL hardcode the NitroTPM attestation Root_CA_Certificate PEM inline in the workflow definition and pass it to the Caller_Script
 7. THE Caller_Workflow SHALL hardcode the Expected_PCRs for PCR4 and PCR7 as a JSON-encoded map inline in the workflow definition and pass it to the Caller_Script
 8. THE Caller_Workflow SHALL accept an optional input `concurrency_count` with a default value of 1, specifying the number of parallel execution requests to dispatch
+9. THE Caller_Workflow SHALL invoke the Caller_Script as a Python package via `python .github/scripts/call_remote_executor` (without a `.py` suffix), relying on the package's `__main__.py` entry point
+10. THE Caller_Script codebase SHALL be organized as a Python package under `.github/scripts/call_remote_executor/` containing focused modules: `errors.py` (CallerError exception), `encryption.py` (ClientEncryption class), `attestation.py` (attestation validation functions and EXPECTED_ATTESTATION_FIELDS constant), `caller.py` (RemoteExecutorCaller HTTP client class), and `cli.py` (main CLI entry point)
+11. THE `call_remote_executor` package SHALL contain an `__init__.py` that re-exports `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`, `EXPECTED_ATTESTATION_FIELDS`, and `main` so that `from call_remote_executor import CallerError, ClientEncryption, RemoteExecutorCaller` continues to resolve
+12. THE `call_remote_executor` package SHALL contain a `__main__.py` that calls the `main()` function from `cli.py`, enabling `python .github/scripts/call_remote_executor` and `python -m call_remote_executor` invocation
+13. THE public API of the `call_remote_executor` package (class names `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`; the `EXPECTED_ATTESTATION_FIELDS` constant; and all public method signatures on those classes) SHALL be preserved across all submodules
+14. THE root `pyproject.toml` and `.github/scripts/pyproject.toml` build configurations SHALL reference the package directory `.github/scripts/call_remote_executor/`
 
 ### Requirement 2: Sample Build Script
 
@@ -390,3 +399,4 @@ The caller includes:
 18. THE Caller_Workflow SHALL report the Execution_ID and the runtime-generated Execution_Marker extracted from each execution's output in the job summary
 19. WHEN all concurrent executions succeed and isolation verification passes, THE Caller_Workflow SHALL mark the workflow as successful
 20. IF any concurrent execution fails (non-zero exit code, attestation failure, or timeout), THEN THE Caller_Workflow SHALL mark the workflow as failed and report which execution failed
+

@@ -12,7 +12,7 @@ The workflow also supports concurrent execution isolation testing. When configur
 
 ### Key Design Decisions
 
-1. **Single Python script**: All client logic (HTTP calls, PQ_Hybrid_KEM encryption, COSE Sign1 verification, attestation validation, polling) lives in one `.github/scripts/call_remote_executor.py` file to keep the caller self-contained and easy to audit.
+1. **Modular Python package**: Client logic is organized as a Python package (`.github/scripts/call_remote_executor/`) with focused modules: `errors.py` (CallerError), `encryption.py` (ClientEncryption / PQ_Hybrid_KEM), `attestation.py` (COSE Sign1 / PKI / PCR validation as standalone functions), `caller.py` (RemoteExecutorCaller HTTP client with thin delegation wrappers), and `cli.py` (argparse / main entry point). The package `__init__.py` re-exports all public symbols for backward-compatible imports. A `__main__.py` enables `python .github/scripts/call_remote_executor` invocation. Attestation methods are extracted as module-level functions accepting `root_cert_pem` and `expected_pcrs` as explicit parameters; `RemoteExecutorCaller` retains thin wrapper methods that delegate to these functions, preserving the existing instance-method API.
 2. **`cbor2` for CBOR decoding**: The attestation documents are COSE Sign1 structures encoded in CBOR. We use the `cbor2` library (pure Python) for decoding both the outer COSE structure and the inner attestation payload.
 3. **`pycose` for COSE Sign1 verification**: The `pycose` library provides `Sign1Message` and `EC2` key types for verifying the COSE signature using the signing certificate's public key.
 4. **`pyOpenSSL` for certificate chain validation**: The `OpenSSL.crypto` module provides `X509Store` and `X509StoreContext` for validating the signing certificate against the CA bundle and root certificate, matching the NitroTPM attestation verification pattern for attestable AMIs.
@@ -139,12 +139,24 @@ sequenceDiagram
 ```
 .github/
   workflows/
-    call-remote-executor.yml    # workflow_dispatch workflow
+    call-remote-executor.yml        # workflow_dispatch workflow
   scripts/
-    call_remote_executor.py     # Python caller script (HTTP, PQ_Hybrid_KEM, attestation, polling)
-    pyproject.toml              # caller dependencies (requests, cbor2, pycose, pyOpenSSL, pycryptodome, cryptography, wolfcrypt-py)
+    call_remote_executor/           # Python package (caller script)
+      __init__.py                   # Re-exports: CallerError, ClientEncryption, RemoteExecutorCaller,
+                                    #              EXPECTED_ATTESTATION_FIELDS, main
+      __main__.py                   # Entry point: from .cli import main; main()
+      errors.py                     # CallerError exception class
+      encryption.py                 # ClientEncryption class (PQ_Hybrid_KEM client-side)
+      attestation.py                # EXPECTED_ATTESTATION_FIELDS, decode_cose_sign1(),
+                                    # validate_attestation(), verify_certificate_chain(),
+                                    # verify_cose_signature(), validate_pcrs(), verify_nonce(),
+                                    # validate_output_attestation()
+      caller.py                     # RemoteExecutorCaller class (HTTP client, orchestration)
+      cli.py                        # main() function, argparse setup
+    verify_isolation.py             # Isolation verification script
+    pyproject.toml                  # caller dependencies
 scripts/
-  sample-build.sh               # sample build script for remote execution
+  sample-build.sh                   # sample build script for remote execution
 ```
 
 ## Components and Interfaces
@@ -187,9 +199,62 @@ When `concurrency_count > 1`, the workflow uses a two-phase job structure:
 - Logs a warning if any isolation test result line is missing from the output
 - Writes a comprehensive isolation verification summary to `$GITHUB_STEP_SUMMARY` including per-execution results
 
-### 2. Caller Script (`.github/scripts/call_remote_executor.py`)
+### 2. Caller Script (`.github/scripts/call_remote_executor/`)
 
-The script is structured as a `RemoteExecutorCaller` class with an `ClientEncryption` helper for PQ_Hybrid_KEM operations:
+The caller is organized as a Python package with focused modules. The `__init__.py` re-exports all public symbols so that `from call_remote_executor import CallerError, ClientEncryption, RemoteExecutorCaller, EXPECTED_ATTESTATION_FIELDS` continues to work. A `__main__.py` enables `python .github/scripts/call_remote_executor` invocation.
+
+#### Module: `errors.py`
+
+Contains only `CallerError` — the leaf dependency with no intra-package imports.
+
+#### Module: `encryption.py`
+
+Contains `ClientEncryption`. Imports `CallerError` from `errors.py`. External deps: `hashlib`, `json`, `os`, `struct`, `base64`, `cryptography` (X25519, HKDF, AESGCM), `wolfcrypt` (MlKemType, MlKemPublic).
+
+#### Module: `attestation.py`
+
+Contains attestation validation as module-level functions (not instance methods). Each function accepts `root_cert_pem` and/or `expected_pcrs` as explicit parameters:
+
+- `EXPECTED_ATTESTATION_FIELDS` constant
+- `decode_cose_sign1(raw_bytes, phase) -> list`
+- `validate_attestation(attestation_b64, root_cert_pem, expected_pcrs, expected_nonce=None) -> dict`
+- `verify_certificate_chain(cert_der, cabundle, root_cert_pem) -> None`
+- `verify_cose_signature(cose_array, root_cert_pem) -> None`
+- `validate_pcrs(document_pcrs, expected_pcrs) -> None`
+- `verify_nonce(payload_doc, expected_nonce, phase) -> None`
+- `validate_output_attestation(output_attestation_b64, stdout, stderr, exit_code, root_cert_pem, expected_pcrs, expected_nonce=None) -> bool`
+
+Imports `CallerError` from `errors.py`. External deps: `base64`, `hashlib`, `logging`, `cbor2`, `pycose`, `OpenSSL.crypto`, `Crypto.Util.number`, `cryptography.x509`.
+
+#### Module: `caller.py`
+
+Contains `RemoteExecutorCaller`. Imports from `errors.py`, `encryption.py`, and `attestation` module. Retains thin delegation methods that preserve the existing instance-method API:
+
+- `validate_attestation(self, attestation_b64, expected_nonce=None)` → calls `attestation.validate_attestation(attestation_b64, self.root_cert_pem, self.expected_pcrs, expected_nonce)`
+- `validate_output_attestation(self, ...)` → calls `attestation.validate_output_attestation(..., self.root_cert_pem, self.expected_pcrs, ...)`
+- `_decode_cose_sign1(self, raw_bytes, phase)` → calls `attestation.decode_cose_sign1(raw_bytes, phase)`
+- `_verify_certificate_chain(self, cert_der, cabundle)` → calls `attestation.verify_certificate_chain(cert_der, cabundle, self.root_cert_pem)`
+- `_verify_cose_signature(self, cose_array)` → calls `attestation.verify_cose_signature(cose_array, self.root_cert_pem)`
+- `_validate_pcrs(self, document_pcrs)` → calls `attestation.validate_pcrs(document_pcrs, self.expected_pcrs)`
+- `_verify_nonce(self, payload_doc, expected_nonce, phase)` → calls `attestation.verify_nonce(payload_doc, expected_nonce, phase)`
+
+External deps: `base64`, `json`, `logging`, `os`, `time`, `requests`.
+
+#### Module: `cli.py`
+
+Contains `main()` — argparse setup, env var reading, `RemoteExecutorCaller` construction, `run()` invocation, error handling, `GITHUB_STEP_SUMMARY` writing. Imports `CallerError` from `errors.py` and `RemoteExecutorCaller` from `caller.py`.
+
+#### Import Dependency Graph (call_remote_executor)
+
+```
+cli.py → caller.py → attestation.py → errors.py
+                    → encryption.py  → errors.py
+       → errors.py
+```
+
+All dependencies are acyclic. `errors.py` is the leaf.
+
+The class interfaces remain unchanged:
 
 ```python
 class ClientEncryption:
@@ -593,7 +658,9 @@ plaintext = AESGCM(shared_key).decrypt(nonce, ciphertext, None)
 response_dict = json.loads(plaintext.decode("utf-8"))
 ```
 
-### 5. Attestation Validation Logic
+### 5. Attestation Validation Logic (`attestation.py`)
+
+The attestation validation functions are module-level functions in `call_remote_executor/attestation.py`. They accept `root_cert_pem` and `expected_pcrs` as explicit parameters rather than reading from `self`. `RemoteExecutorCaller` in `caller.py` retains thin wrapper methods that delegate to these functions.
 
 The attestation document is a COSE Sign1 structure. When base64-decoded and CBOR-decoded, it yields a 4-element array:
 
@@ -1033,6 +1100,12 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 17D.17, 17D.18**
 
+### Property 28: Public API preservation for call_remote_executor
+
+*For any* public symbol name in the set {`CallerError`, `ClientEncryption`, `RemoteExecutorCaller`, `EXPECTED_ATTESTATION_FIELDS`, `main`}, importing that symbol from the `call_remote_executor` package should yield an object that is identical (same type, same identity for classes/functions) to the object defined in the corresponding submodule (`errors.py`, `encryption.py`, `caller.py`, `attestation.py`, `cli.py`). Furthermore, *for any* public method on `RemoteExecutorCaller` that existed before the split (including `validate_attestation`, `validate_output_attestation`, `_verify_certificate_chain`, `_verify_cose_signature`, `_validate_pcrs`, `_verify_nonce`, `_decode_cose_sign1`), the method should remain callable on a `RemoteExecutorCaller` instance with the same signature and produce equivalent results.
+
+**Validates: Requirements 1.11, 1.12, 1.13**
+
 ## Error Handling
 
 ### Error Categories and Responses
@@ -1218,6 +1291,9 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 25. **Isolation summary contains all results**: Generate random sets of execution results with execution IDs, runtime-generated markers extracted from stdout, and isolation test outcomes. Call the summary generation logic. Verify the output contains all execution IDs, extracted markers, marker uniqueness check results, filesystem isolation results, and process isolation results.
     `# Feature: gha-remote-executor-caller, Property 25: Isolation summary contains all results`
 
+26. **Public API preservation for call_remote_executor**: For each public symbol, verify it is importable from both the package top-level and the submodule, and that both references are the same object. For `RemoteExecutorCaller`, verify all public and private attestation delegation methods exist and are callable.
+    `# Feature: gha-remote-executor-caller, Property 28: Public API preservation for call_remote_executor`
+
 **Unit tests** (specific examples and edge cases):
 
 - Empty `server_url` raises error (Req 1.5)
@@ -1273,3 +1349,10 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Each matrix job performs independent PQ_Hybrid_KEM key exchange (Req 17C.12)
 - Workflow succeeds when all executions pass and isolation is verified (Req 17D.17)
 - Workflow fails and reports which execution failed (Req 17D.18)
+- Package directory `.github/scripts/call_remote_executor/` contains `__init__.py`, `__main__.py`, `errors.py`, `encryption.py`, `attestation.py`, `caller.py`, `cli.py` (Req 1.10)
+- Old single-file `.github/scripts/call_remote_executor.py` no longer exists (Req 1.10)
+- `from call_remote_executor import CallerError, ClientEncryption, RemoteExecutorCaller, EXPECTED_ATTESTATION_FIELDS, main` succeeds (Req 1.11)
+- Workflow YAML invocation uses `python .github/scripts/call_remote_executor` without `.py` suffix (Req 1.9)
+- Root `pyproject.toml` references new package directory, not old file path (Req 1.14)
+- Full existing test suite passes after module split with no regressions (Req 1.13)
+

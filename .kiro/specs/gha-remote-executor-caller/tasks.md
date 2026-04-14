@@ -861,6 +861,89 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 47. Final checkpoint - Ensure all PQ_Hybrid_KEM tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 48. Split `call_remote_executor.py` into package structure
+  - [ ] 48.1 Create `.github/scripts/call_remote_executor/errors.py`
+    - Move `CallerError` exception class from `call_remote_executor.py`
+    - No intra-package imports (leaf dependency)
+    - _Requirements: 1.10_
+
+  - [ ] 48.2 Create `.github/scripts/call_remote_executor/encryption.py`
+    - Move `ClientEncryption` class from `call_remote_executor.py`
+    - Add `from .errors import CallerError`
+    - Move all encryption-related imports (`hashlib`, `json`, `os`, `struct`, `base64`, `cryptography.*`, `wolfcrypt.*`)
+    - _Requirements: 1.10_
+
+  - [ ] 48.3 Create `.github/scripts/call_remote_executor/attestation.py`
+    - Move `EXPECTED_ATTESTATION_FIELDS` constant
+    - Extract attestation methods from `RemoteExecutorCaller` as module-level functions: `decode_cose_sign1(raw_bytes, phase)`, `validate_attestation(attestation_b64, root_cert_pem, expected_pcrs, expected_nonce=None)`, `verify_certificate_chain(cert_der, cabundle, root_cert_pem)`, `verify_cose_signature(cose_array, root_cert_pem)`, `validate_pcrs(document_pcrs, expected_pcrs)`, `verify_nonce(payload_doc, expected_nonce, phase)`, `validate_output_attestation(output_attestation_b64, stdout, stderr, exit_code, root_cert_pem, expected_pcrs, expected_nonce=None)`
+    - Each function accepts `root_cert_pem` and/or `expected_pcrs` as explicit parameters instead of reading from `self`
+    - Add `from .errors import CallerError`
+    - Move attestation-related imports (`cbor2`, `pycose.*`, `OpenSSL.crypto`, `Crypto.Util.number`, `cryptography.x509`)
+    - _Requirements: 1.10_
+
+  - [ ] 48.4 Create `.github/scripts/call_remote_executor/caller.py`
+    - Move `RemoteExecutorCaller` class from `call_remote_executor.py`
+    - Add `from .errors import CallerError`, `from .encryption import ClientEncryption`, `from . import attestation`
+    - Replace attestation method bodies with thin delegation wrappers that call `attestation.*` functions passing `self.root_cert_pem` and `self.expected_pcrs`
+    - Keep all HTTP methods (`health_check`, `attest`, `execute`, `poll_output`, `run`, `_generate_summary`, `generate_nonce`, `request_oidc_token`) as instance methods
+    - _Requirements: 1.10, 1.13_
+
+  - [ ] 48.5 Create `.github/scripts/call_remote_executor/cli.py`
+    - Move `main()` function and argparse setup from `call_remote_executor.py`
+    - Add `from .errors import CallerError`, `from .caller import RemoteExecutorCaller`
+    - _Requirements: 1.10_
+
+  - [ ] 48.6 Create `.github/scripts/call_remote_executor/__init__.py`
+    - Re-export `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`, `EXPECTED_ATTESTATION_FIELDS`, `main`
+    - Define `__all__` list
+    - _Requirements: 1.11, 1.13_
+
+  - [ ] 48.7 Create `.github/scripts/call_remote_executor/__main__.py`
+    - Import and call `main()` from `cli.py`
+    - _Requirements: 1.12_
+
+  - [ ] 48.8 Delete `.github/scripts/call_remote_executor.py` (the old single file)
+    - _Requirements: 1.10_
+
+- [ ] 49. Update workflow and build configuration for call_remote_executor package
+  - [ ] 49.1 Update `.github/workflows/call-remote-executor.yml` invocations
+    - Change `python .github/scripts/call_remote_executor.py` to `python .github/scripts/call_remote_executor` (drop `.py` suffix) in all jobs (`call-remote-executor`, `execute`, `verify-isolation`)
+    - _Requirements: 1.9_
+
+  - [ ] 49.2 Update root `pyproject.toml` build configuration
+    - Change `[tool.hatch.build.targets.wheel]` to reference package directory `.github/scripts/call_remote_executor`
+    - _Requirements: 1.14_
+
+  - [ ] 49.3 Update `.github/scripts/pyproject.toml` build configuration
+    - Change `[tool.hatch.build.targets.wheel]` to reference package directory `call_remote_executor`
+    - _Requirements: 1.14_
+
+- [ ] 50. Checkpoint - Verify all tests pass after module split
+  - Run `pytest tests/` and confirm all tests pass with no import errors or regressions
+  - Verify `python .github/scripts/call_remote_executor --help` works
+
+- [ ] 51. Write property tests for public API preservation
+  - [ ] 51.1 Write property test for call_remote_executor API preservation
+    - **Property 28: Public API preservation for call_remote_executor**
+    - Verify `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`, `EXPECTED_ATTESTATION_FIELDS`, `main` are importable from `call_remote_executor`
+    - Verify each symbol is identical to the one in its submodule
+    - Verify `RemoteExecutorCaller` retains all delegation methods (`validate_attestation`, `validate_output_attestation`, `_verify_certificate_chain`, `_verify_cose_signature`, `_validate_pcrs`, `_verify_nonce`, `_decode_cose_sign1`)
+    - **Validates: Requirements 1.11, 1.12, 1.13**
+
+- [ ] 52. Write unit tests for module split structure
+  - [ ] 52.1 Write unit tests for package directory structure
+    - Test `.github/scripts/call_remote_executor/` is a directory containing `__init__.py`, `__main__.py`, `errors.py`, `encryption.py`, `attestation.py`, `caller.py`, `cli.py`
+    - Test old single-file `.github/scripts/call_remote_executor.py` does not exist
+    - _Requirements: 1.10_
+
+  - [ ] 52.2 Write unit tests for build configuration
+    - Test root `pyproject.toml` references package directory, not single-file path
+    - Test workflow YAML uses `python .github/scripts/call_remote_executor` (no `.py`)
+    - _Requirements: 1.9, 1.14_
+
+- [ ] 53. Final checkpoint - Ensure all module split tests pass
+  - Run full test suite and confirm no regressions
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP
@@ -875,3 +958,4 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - Tasks 20-32 cover HPKE encrypted communication, mandatory nonces, and related updates (Requirements 11-16; Properties 16-20)
 - Tasks 33-40 cover concurrent execution isolation support (Requirements 1.8, 2.5-2.14, 17; Properties 22-25)
 - Tasks 41-47 cover PQ_Hybrid_KEM migration from HPKE (Requirements 11A, 12.3, 13.1-13.7; Properties 17, 21, 26, 27)
+- Tasks 48-53 cover module split refactoring for call_remote_executor (Requirements 1.9-1.14; Property 28). The `verify_isolation.py` script remains as a single file.
