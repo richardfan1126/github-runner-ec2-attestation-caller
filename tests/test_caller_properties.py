@@ -1874,3 +1874,120 @@ class TestPQHybridKEMKeyExchangeEndToEnd:
 
         client_decrypted = client.decrypt_response(encrypted_response_b64)
         assert client_decrypted == server_response
+
+
+class TestPublicAPIPreservation:
+    """Property 28: Public API preservation for call_remote_executor.
+
+    Verifies that all public symbols are importable from the top-level package
+    and are identical to the ones defined in their respective submodules.
+    Also verifies that RemoteExecutorCaller retains all delegation methods.
+
+    Validates: Requirements 1.11, 1.12, 1.13
+    """
+
+    def test_top_level_exports_match_submodules(self):
+        """CallerError, ClientEncryption, RemoteExecutorCaller,
+        EXPECTED_ATTESTATION_FIELDS, and main are importable from
+        call_remote_executor and identical to their submodule definitions."""
+        import call_remote_executor
+        from call_remote_executor.errors import CallerError as _CallerError
+        from call_remote_executor.encryption import ClientEncryption as _ClientEncryption
+        from call_remote_executor.caller import RemoteExecutorCaller as _RemoteExecutorCaller
+        from call_remote_executor.attestation import EXPECTED_ATTESTATION_FIELDS as _FIELDS
+        from call_remote_executor.cli import main as _main
+
+        assert call_remote_executor.CallerError is _CallerError
+        assert call_remote_executor.ClientEncryption is _ClientEncryption
+        assert call_remote_executor.RemoteExecutorCaller is _RemoteExecutorCaller
+        assert call_remote_executor.EXPECTED_ATTESTATION_FIELDS is _FIELDS
+        assert call_remote_executor.main is _main
+
+    def test_all_exports_listed(self):
+        """__all__ contains exactly the expected public symbols."""
+        import call_remote_executor
+
+        expected = {
+            "CallerError",
+            "ClientEncryption",
+            "RemoteExecutorCaller",
+            "EXPECTED_ATTESTATION_FIELDS",
+            "main",
+        }
+        assert set(call_remote_executor.__all__) == expected
+
+    def test_caller_delegation_methods_exist(self):
+        """RemoteExecutorCaller retains all delegation wrapper methods."""
+        expected_methods = [
+            "validate_attestation",
+            "validate_output_attestation",
+            "_verify_certificate_chain",
+            "_verify_cose_signature",
+            "_validate_pcrs",
+            "_verify_nonce",
+            "_decode_cose_sign1",
+        ]
+        for method_name in expected_methods:
+            assert hasattr(RemoteExecutorCaller, method_name), (
+                f"RemoteExecutorCaller missing delegation method: {method_name}"
+            )
+            assert callable(getattr(RemoteExecutorCaller, method_name)), (
+                f"RemoteExecutorCaller.{method_name} is not callable"
+            )
+
+    @given(method_name=st.sampled_from([
+        "validate_attestation",
+        "validate_output_attestation",
+        "_verify_certificate_chain",
+        "_verify_cose_signature",
+        "_validate_pcrs",
+        "_verify_nonce",
+        "_decode_cose_sign1",
+    ]))
+    @settings(max_examples=7)
+    def test_delegation_methods_are_callable_on_instance(self, method_name: str):
+        """Each delegation method is callable on a RemoteExecutorCaller instance."""
+        caller = RemoteExecutorCaller(server_url="http://localhost:9999")
+        method = getattr(caller, method_name)
+        assert callable(method)
+
+    def test_caller_public_http_methods_exist(self):
+        """RemoteExecutorCaller retains all public HTTP/orchestration methods."""
+        expected_public = [
+            "health_check",
+            "attest",
+            "execute",
+            "poll_output",
+            "run",
+            "request_oidc_token",
+            "generate_nonce",
+            "validate_attestation",
+            "validate_output_attestation",
+        ]
+        for method_name in expected_public:
+            assert hasattr(RemoteExecutorCaller, method_name), (
+                f"RemoteExecutorCaller missing public method: {method_name}"
+            )
+
+    def test_client_encryption_public_api(self):
+        """ClientEncryption retains all public methods and properties."""
+        expected = [
+            "client_public_key_bytes",
+            "parse_composite_server_key",
+            "verify_server_key_fingerprint",
+            "derive_shared_key",
+            "encrypt_payload",
+            "decrypt_response",
+        ]
+        for name in expected:
+            assert hasattr(ClientEncryption, name), (
+                f"ClientEncryption missing: {name}"
+            )
+
+    def test_caller_error_attributes(self):
+        """CallerError has message, phase, and details attributes."""
+        err = CallerError(message="test", phase="test_phase", details={"k": "v"})
+        assert err.message == "test"
+        assert err.phase == "test_phase"
+        assert err.details == {"k": "v"}
+        assert isinstance(err, Exception)

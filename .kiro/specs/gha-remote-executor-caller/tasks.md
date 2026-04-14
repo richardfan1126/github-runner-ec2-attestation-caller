@@ -922,8 +922,8 @@ Implement the client-side caller for the Remote Executor system: a Python script
   - Run `pytest tests/` and confirm all tests pass with no import errors or regressions
   - Verify `python .github/scripts/call_remote_executor --help` works
 
-- [ ] 51. Write property tests for public API preservation
-  - [ ] 51.1 Write property test for call_remote_executor API preservation
+- [x] 51. Write property tests for public API preservation
+  - [x] 51.1 Write property test for call_remote_executor API preservation
     - **Property 28: Public API preservation for call_remote_executor**
     - Verify `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`, `EXPECTED_ATTESTATION_FIELDS`, `main` are importable from `call_remote_executor`
     - Verify each symbol is identical to the one in its submodule
