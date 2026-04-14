@@ -1,0 +1,577 @@
+"""RemoteExecutorCaller HTTP client for the Remote Executor server."""
+
+import base64
+import json
+import logging
+import os
+import time
+
+import requests
+
+from .errors import CallerError
+from .encryption import ClientEncryption
+from . import attestation
+
+logger = logging.getLogger(__name__)
+
+
+class RemoteExecutorCaller:
+    """Client for the Remote Executor server."""
+
+    def __init__(
+        self,
+        server_url: str,
+        timeout: int = 30,
+        poll_interval: int = 5,
+        max_poll_duration: int = 600,
+        max_retries: int = 3,
+        root_cert_pem: str = "",
+        expected_pcrs: dict[int, str] | None = None,
+        audience: str = "",
+    ):
+        self.server_url = server_url.rstrip("/")
+        self.timeout = timeout
+        self.poll_interval = poll_interval
+        self.max_poll_duration = max_poll_duration
+        self.max_retries = max_retries
+        self.root_cert_pem = root_cert_pem
+        self.expected_pcrs = expected_pcrs
+        self.audience = audience
+        self._oidc_token: str | None = None
+
+    @staticmethod
+    def generate_nonce() -> str:
+        """Generate a unique random nonce for attestation freshness verification.
+
+        Returns a 64-character hex string (32 random bytes).
+        """
+        return os.urandom(32).hex()
+
+    # ---- Thin delegation wrappers for attestation functions ----
+
+    def _decode_cose_sign1(self, raw_bytes: bytes, phase: str) -> list:
+        """Decode raw bytes into a COSE_Sign1 4-element array."""
+        return attestation.decode_cose_sign1(raw_bytes, phase)
+
+    def validate_attestation(self, attestation_b64: str, expected_nonce: str | None = None) -> dict:
+        """Decode base64 -> CBOR -> COSE Sign1 array. Validate and verify."""
+        return attestation.validate_attestation(
+            attestation_b64, self.root_cert_pem, self.expected_pcrs, expected_nonce
+        )
+
+    def _verify_certificate_chain(self, cert_der: bytes, cabundle: list[bytes]) -> None:
+        """Validate the signing certificate against the CA bundle and root certificate."""
+        attestation.verify_certificate_chain(cert_der, cabundle, self.root_cert_pem)
+
+    def _verify_cose_signature(self, cose_array: list) -> None:
+        """Verify the COSE_Sign1 signature using the signing certificate's public key."""
+        attestation.verify_cose_signature(cose_array, self.root_cert_pem)
+
+    def _validate_pcrs(self, document_pcrs: dict) -> None:
+        """Compare expected PCR values against those in the attestation document."""
+        attestation.validate_pcrs(document_pcrs, self.expected_pcrs)
+
+    def _verify_nonce(self, payload_doc: dict, expected_nonce: str, phase: str) -> None:
+        """Verify the nonce field in the attestation payload matches the expected nonce."""
+        attestation.verify_nonce(payload_doc, expected_nonce, phase)
+
+    def validate_output_attestation(
+        self,
+        output_attestation_b64: str,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        expected_nonce: str | None = None,
+    ) -> bool:
+        """Decode output attestation CBOR, extract user_data digest.
+
+        Compute SHA-256 of canonical output format. Compare digests.
+        Returns True if match.
+        Raises CallerError on decode/parse failures or digest mismatch.
+        """
+        return attestation.validate_output_attestation(
+            output_attestation_b64, stdout, stderr, exit_code,
+            self.root_cert_pem, self.expected_pcrs, expected_nonce
+        )
+
+    # ---- HTTP methods ----
+
+    def request_oidc_token(self) -> str:
+        """Request an OIDC token from GitHub's OIDC provider.
+
+        Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN
+        from environment variables. Makes an HTTP GET to the request URL with
+        the audience query parameter and Bearer authorization header.
+
+        Returns the OIDC JWT token string.
+        Raises CallerError(phase="oidc") if env vars are missing or request fails.
+        """
+        request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+        request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+
+        if not request_url or not request_token:
+            raise CallerError(
+                message="OIDC token request requires id-token: write permission in the workflow",
+                phase="oidc",
+                details={
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "set" if request_url else "missing",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "set" if request_token else "missing",
+                },
+            )
+
+        url = f"{request_url}&audience={self.audience}" if self.audience else request_url
+        headers = {"Authorization": f"Bearer {request_token}"}
+
+        try:
+            response = requests.get(url, headers=headers, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise CallerError(
+                message=f"OIDC token request failed: {exc}",
+                phase="oidc",
+                details={"error": str(exc)},
+            )
+
+        if response.status_code != 200:
+            raise CallerError(
+                message=f"OIDC token request failed with HTTP {response.status_code}",
+                phase="oidc",
+                details={"status_code": response.status_code, "body": response.text},
+            )
+
+        try:
+            token = response.json()["value"]
+        except (KeyError, ValueError) as exc:
+            raise CallerError(
+                message=f"OIDC token response missing 'value' field: {exc}",
+                phase="oidc",
+                details={"error": str(exc)},
+            )
+
+        self._oidc_token = token
+        logger.info("OIDC token acquired successfully")
+        return token
+
+    def health_check(self) -> dict:
+        """GET /health - verify server is healthy.
+
+        Returns parsed JSON response.
+        Raises CallerError if unhealthy or unreachable.
+        """
+        url = f"{self.server_url}/health"
+        try:
+            response = requests.get(url, timeout=self.timeout)
+        except requests.ConnectionError as exc:
+            raise CallerError(
+                message=f"Failed to connect to server health endpoint: {exc}",
+                phase="health_check",
+                details={"url": url, "error": str(exc)},
+            )
+        except requests.RequestException as exc:
+            raise CallerError(
+                message=f"Health check request failed: {exc}",
+                phase="health_check",
+                details={"url": url, "error": str(exc)},
+            )
+
+        if response.status_code != 200:
+            raise CallerError(
+                message=f"Health check failed with HTTP {response.status_code}",
+                phase="health_check",
+                details={
+                    "status_code": response.status_code,
+                    "body": response.text,
+                },
+            )
+
+        data = response.json()
+        if data.get("status") != "healthy":
+            raise CallerError(
+                message=f"Server is not healthy: status={data.get('status')}",
+                phase="health_check",
+                details={"response": data},
+            )
+
+        return data
+
+    def attest(self) -> bytes:
+        """GET /attest?nonce={nonce} - retrieve server attestation and composite public key.
+
+        Validates the returned attestation document (COSE Sign1 + PKI + PCR + nonce).
+        Extracts the composite Server_Public_Key from the `server_public_key` field
+        in the JSON response body (base64-encoded).
+        Verifies the SHA-256 fingerprint of the composite key matches the `public_key`
+        field in the attestation document.
+        Initializes self._encryption (ClientEncryption) and derives the Shared_Key
+        via PQ_Hybrid_KEM.
+
+        Returns the raw composite server public key bytes.
+        Raises CallerError on validation failure, missing fields, fingerprint mismatch,
+        or connection error.
+        """
+        nonce = self.generate_nonce()
+        url = f"{self.server_url}/attest"
+        try:
+            response = requests.get(url, params={"nonce": nonce}, timeout=self.timeout)
+        except requests.ConnectionError as exc:
+            raise CallerError(
+                message=f"Failed to connect to server attest endpoint: {exc}",
+                phase="attest",
+                details={"url": url, "error": str(exc)},
+            )
+        except requests.RequestException as exc:
+            raise CallerError(
+                message=f"Attest request failed: {exc}",
+                phase="attest",
+                details={"url": url, "error": str(exc)},
+            )
+
+        if response.status_code != 200:
+            raise CallerError(
+                message=f"Attest failed with HTTP {response.status_code}",
+                phase="attest",
+                details={
+                    "status_code": response.status_code,
+                    "body": response.text,
+                },
+            )
+
+        data = response.json()
+        attestation_b64 = data.get("attestation_document", "")
+
+        # Extract composite server public key from JSON response
+        server_public_key_b64 = data.get("server_public_key")
+        if not server_public_key_b64:
+            raise CallerError(
+                message="Attest response missing server_public_key field",
+                phase="attest",
+                details={"response_fields": list(data.keys())},
+            )
+        try:
+            composite_key_bytes = base64.b64decode(server_public_key_b64)
+        except Exception as exc:
+            raise CallerError(
+                message=f"Failed to base64-decode server_public_key: {exc}",
+                phase="attest",
+                details={"error": str(exc)},
+            )
+
+        # Validate attestation (COSE Sign1 + PKI + PCR + nonce)
+        payload_doc = self.validate_attestation(attestation_b64, expected_nonce=nonce)
+
+        # Verify composite key fingerprint against attestation public_key field
+        attestation_fingerprint = payload_doc.get("public_key")
+        if not attestation_fingerprint:
+            raise CallerError(
+                message="Attestation document missing public_key field for fingerprint verification",
+                phase="attest",
+                details={"attestation_fields": list(payload_doc.keys())},
+            )
+        ClientEncryption.verify_server_key_fingerprint(composite_key_bytes, attestation_fingerprint)
+
+        # Initialize encryption and derive shared key using composite key
+        self._encryption = ClientEncryption()
+        self._encryption.derive_shared_key(composite_key_bytes)
+
+        # Store nonce for later reference
+        self._attest_nonce = nonce
+
+        logger.info("Server attestation validated, PQ_Hybrid_KEM key exchange complete")
+        return composite_key_bytes
+
+    def execute(
+        self,
+        repository_url: str,
+        commit_hash: str,
+        script_path: str,
+        github_token: str,
+    ) -> dict:
+        """POST /execute - submit encrypted execution request.
+
+        Encrypts the payload via HPKE (AES-256-GCM) using the shared key
+        derived during attest(). Sends an encrypted envelope with
+        encrypted_payload and client_public_key. No Authorization header.
+
+        Returns decrypted response dict with execution_id and attestation_document.
+        Raises CallerError on HTTP errors, encryption/decryption failures,
+        or attestation validation failures.
+        """
+        if not hasattr(self, "_encryption") or self._encryption is None:
+            raise CallerError(
+                message="Cannot execute: HPKE key exchange not completed (call attest() first)",
+                phase="execute",
+            )
+
+        nonce = self.generate_nonce()
+        url = f"{self.server_url}/execute"
+        plaintext_payload = {
+            "repository_url": repository_url,
+            "commit_hash": commit_hash,
+            "script_path": script_path,
+            "github_token": github_token,
+            "oidc_token": self._oidc_token or "",
+            "nonce": nonce,
+        }
+        encrypted_payload = self._encryption.encrypt_payload(plaintext_payload)
+        client_public_key_b64 = base64.b64encode(
+            self._encryption.client_public_key_bytes
+        ).decode("ascii")
+
+        envelope = {
+            "encrypted_payload": encrypted_payload,
+            "client_public_key": client_public_key_b64,
+        }
+
+        try:
+            response = requests.post(url, json=envelope, timeout=self.timeout)
+        except requests.ConnectionError as exc:
+            raise CallerError(
+                message=f"Failed to connect to server execute endpoint: {exc}",
+                phase="execute",
+                details={"url": url, "error": str(exc)},
+            )
+        except requests.RequestException as exc:
+            raise CallerError(
+                message=f"Execute request failed: {exc}",
+                phase="execute",
+                details={"url": url, "error": str(exc)},
+            )
+
+        if response.status_code == 401:
+            raise CallerError(
+                message="Authentication failure: server returned HTTP 401 Unauthorized",
+                phase="execute",
+                details={"status_code": 401, "body": response.text},
+            )
+        if response.status_code == 403:
+            raise CallerError(
+                message="Repository is not authorized: server returned HTTP 403 Forbidden",
+                phase="execute",
+                details={"status_code": 403, "body": response.text},
+            )
+        if response.status_code != 200:
+            raise CallerError(
+                message=f"Execute failed with HTTP {response.status_code}",
+                phase="execute",
+                details={
+                    "status_code": response.status_code,
+                    "body": response.text,
+                },
+            )
+
+        # Decrypt the encrypted response
+        data = response.json()
+        encrypted_response_b64 = data.get("encrypted_response", "")
+        decrypted = self._encryption.decrypt_response(encrypted_response_b64)
+
+        # Validate attestation with nonce verification
+        attestation_b64 = decrypted.get("attestation_document", "")
+        if attestation_b64:
+            self.validate_attestation(attestation_b64, expected_nonce=nonce)
+
+        return decrypted
+
+    def poll_output(self, execution_id: str) -> dict:
+        """Poll POST /execution/{id}/output with encrypted requests until complete or timeout.
+
+        Each poll request generates a unique nonce, encrypts {oidc_token, nonce}
+        via HPKE, and sends {encrypted_payload} (no client_public_key, no Authorization header).
+        Decrypts the encrypted response from the server.
+
+        On final response (complete=true), stores the last nonce for output
+        attestation nonce verification.
+
+        Logs incremental output during polling.
+        Returns final decrypted response with stdout, stderr, exit_code,
+        output_attestation_document.
+        Raises CallerError on timeout, repeated HTTP failures, or decryption errors.
+        """
+        if not hasattr(self, "_encryption") or self._encryption is None:
+            raise CallerError(
+                message="Cannot poll: HPKE key exchange not completed (call attest() first)",
+                phase="polling",
+            )
+
+        url = f"{self.server_url}/execution/{execution_id}/output"
+        start_time = time.monotonic()
+        consecutive_errors = 0
+        prev_stdout_offset = 0
+        prev_stderr_offset = 0
+
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed >= self.max_poll_duration:
+                raise CallerError(
+                    message=f"Polling timed out after {elapsed:.0f}s (max {self.max_poll_duration}s)",
+                    phase="polling",
+                    details={"elapsed": elapsed, "max_poll_duration": self.max_poll_duration},
+                )
+
+            nonce = self.generate_nonce()
+            plaintext_payload = {
+                "oidc_token": self._oidc_token or "",
+                "nonce": nonce,
+            }
+            encrypted_payload = self._encryption.encrypt_payload(plaintext_payload)
+            envelope = {"encrypted_payload": encrypted_payload}
+
+            try:
+                response = requests.post(url, json=envelope, timeout=self.timeout)
+            except requests.RequestException as exc:
+                consecutive_errors += 1
+                if consecutive_errors >= self.max_retries:
+                    raise CallerError(
+                        message=f"Polling failed after {consecutive_errors} consecutive errors: {exc}",
+                        phase="polling",
+                        details={"error": str(exc), "consecutive_errors": consecutive_errors},
+                    )
+                logger.warning("Poll request error (%d/%d): %s", consecutive_errors, self.max_retries, exc)
+                time.sleep(self.poll_interval)
+                continue
+
+            if response.status_code == 401:
+                raise CallerError(
+                    message="Authentication failure: server returned HTTP 401 Unauthorized",
+                    phase="polling",
+                    details={"status_code": 401, "body": response.text},
+                )
+            if response.status_code == 403:
+                raise CallerError(
+                    message="Repository is not authorized: server returned HTTP 403 Forbidden",
+                    phase="polling",
+                    details={"status_code": 403, "body": response.text},
+                )
+
+            if response.status_code != 200:
+                consecutive_errors += 1
+                if consecutive_errors >= self.max_retries:
+                    raise CallerError(
+                        message=f"Polling failed with HTTP {response.status_code} after {consecutive_errors} consecutive errors",
+                        phase="polling",
+                        details={"status_code": response.status_code, "consecutive_errors": consecutive_errors},
+                    )
+                logger.warning("Poll HTTP error %d (%d/%d)", response.status_code, consecutive_errors, self.max_retries)
+                time.sleep(self.poll_interval)
+                continue
+
+            # Reset consecutive error counter on success
+            consecutive_errors = 0
+            resp_data = response.json()
+            encrypted_response_b64 = resp_data.get("encrypted_response", "")
+            data = self._encryption.decrypt_response(encrypted_response_b64)
+
+            # Log incremental output
+            stdout = data.get("stdout", "")
+            stderr = data.get("stderr", "")
+            if len(stdout) > prev_stdout_offset:
+                logger.info("stdout: %s", stdout[prev_stdout_offset:])
+                prev_stdout_offset = len(stdout)
+            if len(stderr) > prev_stderr_offset:
+                logger.info("stderr: %s", stderr[prev_stderr_offset:])
+                prev_stderr_offset = len(stderr)
+
+            if data.get("complete"):
+                self._last_poll_nonce = nonce
+                return {
+                    "stdout": data.get("stdout", ""),
+                    "stderr": data.get("stderr", ""),
+                    "exit_code": data.get("exit_code"),
+                    "output_attestation_document": data.get("output_attestation_document"),
+                }
+
+            time.sleep(self.poll_interval)
+
+    def _generate_summary(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        attestation_status: str,
+        output_integrity_status: str,
+    ) -> str:
+        """Generate a GitHub Actions job summary string."""
+        lines = [
+            "## Remote Executor Results",
+            "",
+            f"**Exit Code:** {exit_code}",
+            f"**Attestation Validation:** {attestation_status}",
+            f"**Output Integrity:** {output_integrity_status}",
+            "",
+            "### stdout",
+            "```",
+            stdout,
+            "```",
+            "",
+            "### stderr",
+            "```",
+            stderr,
+            "```",
+        ]
+        return "\n".join(lines)
+
+    def run(
+        self,
+        repository_url: str,
+        commit_hash: str,
+        script_path: str,
+        github_token: str,
+    ) -> int:
+        """Orchestrate full flow.
+
+        health_check -> request_oidc_token -> attest -> execute (encrypted)
+        -> poll_output (encrypted) -> validate_output_attestation (with nonce)
+        -> report results.
+        Returns remote script exit code.
+        """
+        # Health check
+        logger.info("Checking server health...")
+        self.health_check()
+        logger.info("Server is healthy")
+
+        # Acquire OIDC token
+        logger.info("Requesting OIDC token...")
+        self.request_oidc_token()
+        logger.info("OIDC token acquired")
+
+        # Attest: get server public key and establish HPKE shared key
+        logger.info("Attesting server identity and establishing encrypted channel...")
+        self.attest()
+        logger.info("Server attestation validated, HPKE key exchange complete")
+
+        # Execute (encrypted) — attestation validation with nonce is done inside execute()
+        logger.info("Submitting encrypted execution request...")
+        exec_response = self.execute(repository_url, commit_hash, script_path, github_token)
+        execution_id = exec_response["execution_id"]
+        attestation_status = "pass"
+        logger.info("Execution submitted: %s", execution_id)
+
+        # Poll for output (encrypted)
+        logger.info("Polling for execution output...")
+        output = self.poll_output(execution_id)
+        stdout = output["stdout"]
+        stderr = output["stderr"]
+        exit_code = output["exit_code"]
+        output_attestation_b64 = output.get("output_attestation_document")
+
+        logger.info("exit_code: %s", exit_code)
+
+        # Validate output attestation with last poll nonce
+        if output_attestation_b64:
+            logger.info("Validating output attestation...")
+            last_nonce = getattr(self, "_last_poll_nonce", None)
+            self.validate_output_attestation(
+                output_attestation_b64, stdout, stderr, exit_code,
+                expected_nonce=last_nonce,
+            )
+            output_integrity_status = "pass"
+        else:
+            logger.warning("No output attestation document received, skipping output integrity verification")
+            output_integrity_status = "skipped"
+
+        logger.info("Output integrity: %s", output_integrity_status)
+
+        # Generate summary
+        self.summary = self._generate_summary(
+            stdout, stderr, exit_code, attestation_status, output_integrity_status,
+        )
+
+        return exit_code

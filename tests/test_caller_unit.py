@@ -293,7 +293,7 @@ class TestHealthCheckAndExecuteEdgeCases:
         """Connection refused on health_check raises CallerError with phase 'health_check'.
         Validates: Requirement 8.4"""
         caller = _make_caller()
-        with patch("call_remote_executor.requests.get", side_effect=requests.ConnectionError("Connection refused")):
+        with patch("call_remote_executor.caller.requests.get", side_effect=requests.ConnectionError("Connection refused")):
             with pytest.raises(CallerError) as exc_info:
                 caller.health_check()
             assert exc_info.value.phase == "health_check"
@@ -304,7 +304,7 @@ class TestHealthCheckAndExecuteEdgeCases:
         caller = _make_caller()
         caller._oidc_token = "test-token"
         _setup_encryption_for_caller(caller)
-        with patch("call_remote_executor.requests.post", side_effect=requests.ConnectionError("Connection refused")):
+        with patch("call_remote_executor.caller.requests.post", side_effect=requests.ConnectionError("Connection refused")):
             with pytest.raises(CallerError) as exc_info:
                 caller.execute(
                     repository_url="https://github.com/owner/repo",
@@ -343,14 +343,14 @@ class TestPollingEdgeCases:
         }
         encrypted_resp = server_enc.encrypt_payload(incomplete_data)
 
-        mock_post_patcher = patch("call_remote_executor.requests.post")
+        mock_post_patcher = patch("call_remote_executor.caller.requests.post")
         mock_post = mock_post_patcher.start()
         mock_resp = mock_post.return_value
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
 
         try:
-            with patch("call_remote_executor.time.sleep"):
+            with patch("call_remote_executor.caller.time.sleep"):
                 with pytest.raises(CallerError) as exc_info:
                     caller.poll_output("test-exec-id")
                 assert exc_info.value.phase == "polling"
@@ -425,7 +425,7 @@ class TestOIDCTokenAcquisitionErrors:
         }
         mock_resp = type("MockResp", (), {"status_code": 500, "text": "Internal Server Error", "json": lambda self: {}})()
         with patch.dict(os.environ, env, clear=True):
-            with patch("call_remote_executor.requests.get", return_value=mock_resp):
+            with patch("call_remote_executor.caller.requests.get", return_value=mock_resp):
                 with pytest.raises(CallerError) as exc_info:
                     caller.request_oidc_token()
                 assert exc_info.value.phase == "oidc"
@@ -442,7 +442,7 @@ class TestOIDCAuthenticatedEndpointErrors:
         caller._oidc_token = "test-token"
         _setup_encryption_for_caller(caller)
         mock_resp = type("MockResp", (), {"status_code": 401, "text": "Unauthorized"})()
-        with patch("call_remote_executor.requests.post", return_value=mock_resp):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
             with pytest.raises(CallerError) as exc_info:
                 caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
             assert exc_info.value.phase == "execute"
@@ -455,7 +455,7 @@ class TestOIDCAuthenticatedEndpointErrors:
         caller._oidc_token = "test-token"
         _setup_encryption_for_caller(caller)
         mock_resp = type("MockResp", (), {"status_code": 403, "text": "Forbidden"})()
-        with patch("call_remote_executor.requests.post", return_value=mock_resp):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
             with pytest.raises(CallerError) as exc_info:
                 caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
             assert exc_info.value.phase == "execute"
@@ -468,7 +468,7 @@ class TestOIDCAuthenticatedEndpointErrors:
         caller._oidc_token = "test-token"
         _setup_encryption_for_caller(caller)
         mock_resp = type("MockResp", (), {"status_code": 401, "text": "Unauthorized"})()
-        with patch("call_remote_executor.requests.post", return_value=mock_resp):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
             with pytest.raises(CallerError) as exc_info:
                 caller.poll_output("test-exec-id")
             assert exc_info.value.phase == "polling"
@@ -481,7 +481,7 @@ class TestOIDCAuthenticatedEndpointErrors:
         caller._oidc_token = "test-token"
         _setup_encryption_for_caller(caller)
         mock_resp = type("MockResp", (), {"status_code": 403, "text": "Forbidden"})()
-        with patch("call_remote_executor.requests.post", return_value=mock_resp):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
             with pytest.raises(CallerError) as exc_info:
                 caller.poll_output("test-exec-id")
             assert exc_info.value.phase == "polling"
@@ -497,7 +497,7 @@ class TestHealthCheckAuthorizationExclusion:
         caller = _make_caller()
         caller._oidc_token = "should-not-be-sent"
 
-        with patch("call_remote_executor.requests.get") as mock_get:
+        with patch("call_remote_executor.caller.requests.get") as mock_get:
             mock_resp = mock_get.return_value
             mock_resp.status_code = 200
             mock_resp.json.return_value = {"status": "healthy"}
@@ -1063,7 +1063,7 @@ class TestDeriveSharedKeyPQHybridKEM:
         client = ClientEncryption()
 
         # Mock MlKemPublic.encapsulate to raise an exception
-        with patch("call_remote_executor.MlKemPublic") as mock_mlkem_cls:
+        with patch("call_remote_executor.encryption.MlKemPublic") as mock_mlkem_cls:
             mock_instance = mock_mlkem_cls.return_value
             mock_instance.decode_key.return_value = None
             mock_instance.encapsulate.side_effect = RuntimeError("ML-KEM-768 encapsulation failed")
@@ -1245,7 +1245,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1269,7 +1269,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key_bytes=None)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1290,7 +1290,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1312,7 +1312,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1334,7 +1334,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1358,7 +1358,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1388,7 +1388,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, bad_composite)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1403,7 +1403,7 @@ class TestAttestMethod:
         """Connection error raises CallerError with phase 'attest'.
         Validates: Requirement 11.9"""
         caller = _make_caller()
-        with patch("call_remote_executor.requests.get", side_effect=requests.ConnectionError("Connection refused")):
+        with patch("call_remote_executor.caller.requests.get", side_effect=requests.ConnectionError("Connection refused")):
             with pytest.raises(CallerError) as exc_info:
                 caller.attest()
             assert exc_info.value.phase == "attest"
@@ -1412,7 +1412,7 @@ class TestAttestMethod:
         """HTTP error raises CallerError with phase 'attest'.
         Validates: Requirement 11.8"""
         caller = _make_caller()
-        with patch("call_remote_executor.requests.get") as mock_get:
+        with patch("call_remote_executor.caller.requests.get") as mock_get:
             mock_resp = mock_get.return_value
             mock_resp.status_code = 500
             mock_resp.text = "Internal Server Error"
@@ -1435,7 +1435,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1463,7 +1463,7 @@ class TestAttestMethod:
         mock_response_data = self._make_attest_response(payload, composite_key)
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.get") as mock_get:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 mock_resp = mock_get.return_value
                 mock_resp.status_code = 200
                 mock_resp.json.return_value = mock_response_data
@@ -1505,7 +1505,7 @@ class TestEncryptedExecute:
             "status": "queued",
         })
 
-        with patch("call_remote_executor.requests.post", return_value=mock_resp) as mock_post:
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
             caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         sent_json = mock_post.call_args[1]["json"]
@@ -1525,7 +1525,7 @@ class TestEncryptedExecute:
             "status": "queued",
         })
 
-        with patch("call_remote_executor.requests.post", return_value=mock_resp) as mock_post:
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
             caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         call_kwargs = mock_post.call_args[1]
@@ -1551,7 +1551,7 @@ class TestEncryptedExecute:
             return original_encrypt(payload_dict)
 
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
-            with patch("call_remote_executor.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
                 caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         assert len(captured_payloads) == 1
@@ -1575,7 +1575,7 @@ class TestEncryptedExecute:
             return original_encrypt(payload_dict)
 
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
-            with patch("call_remote_executor.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
                 caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         assert len(captured_payloads) == 1
@@ -1611,7 +1611,7 @@ class TestEncryptedExecute:
         })
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
                 with patch.object(caller, "validate_attestation") as mock_validate:
                     caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
@@ -1660,8 +1660,8 @@ class TestEncryptedPollOutput:
             "output_attestation_document": None,
         })
 
-        with patch("call_remote_executor.requests.post", return_value=mock_resp) as mock_post:
-            with patch("call_remote_executor.requests.get") as mock_get:
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
+            with patch("call_remote_executor.caller.requests.get") as mock_get:
                 caller.poll_output("exec-1")
 
         mock_post.assert_called_once()
@@ -1681,7 +1681,7 @@ class TestEncryptedPollOutput:
             "output_attestation_document": None,
         })
 
-        with patch("call_remote_executor.requests.post", return_value=mock_resp) as mock_post:
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
             caller.poll_output("exec-1")
 
         call_kwargs = mock_post.call_args[1]
@@ -1708,7 +1708,7 @@ class TestEncryptedPollOutput:
             return original_encrypt(payload_dict)
 
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
-            with patch("call_remote_executor.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
                 caller.poll_output("exec-1")
 
         assert len(captured_payloads) == 1
@@ -1743,8 +1743,8 @@ class TestEncryptedPollOutput:
             return original_encrypt(payload_dict)
 
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
-            with patch("call_remote_executor.requests.post", side_effect=[incomplete_resp, complete_resp]):
-                with patch("call_remote_executor.time.sleep"):
+            with patch("call_remote_executor.caller.requests.post", side_effect=[incomplete_resp, complete_resp]):
+                with patch("call_remote_executor.caller.time.sleep"):
                     caller.poll_output("exec-1")
 
         assert len(captured_payloads) == 2
@@ -1766,7 +1766,7 @@ class TestEncryptedPollOutput:
             "output_attestation_document": None,
         })
 
-        with patch("call_remote_executor.requests.post", return_value=mock_resp) as mock_post:
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
             caller.poll_output("exec-1")
 
         sent_json = mock_post.call_args[1]["json"]
@@ -1784,7 +1784,7 @@ class TestEncryptedPollOutput:
             "output_attestation_document": "attest-b64",
         })
 
-        with patch("call_remote_executor.requests.post", return_value=mock_resp):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
             result = caller.poll_output("exec-1")
 
         assert result["stdout"] == "build output"
@@ -1806,7 +1806,7 @@ class TestEncryptedPollOutput:
         })
 
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
                 caller.poll_output("exec-1")
 
         assert caller._last_poll_nonce == fixed_nonce

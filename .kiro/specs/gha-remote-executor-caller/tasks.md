@@ -861,19 +861,19 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 47. Final checkpoint - Ensure all PQ_Hybrid_KEM tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 48. Split `call_remote_executor.py` into package structure
-  - [ ] 48.1 Create `.github/scripts/call_remote_executor/errors.py`
+- [x] 48. Split `call_remote_executor.py` into package structure
+  - [x] 48.1 Create `.github/scripts/call_remote_executor/errors.py`
     - Move `CallerError` exception class from `call_remote_executor.py`
     - No intra-package imports (leaf dependency)
     - _Requirements: 1.10_
 
-  - [ ] 48.2 Create `.github/scripts/call_remote_executor/encryption.py`
+  - [x] 48.2 Create `.github/scripts/call_remote_executor/encryption.py`
     - Move `ClientEncryption` class from `call_remote_executor.py`
     - Add `from .errors import CallerError`
     - Move all encryption-related imports (`hashlib`, `json`, `os`, `struct`, `base64`, `cryptography.*`, `wolfcrypt.*`)
     - _Requirements: 1.10_
 
-  - [ ] 48.3 Create `.github/scripts/call_remote_executor/attestation.py`
+  - [x] 48.3 Create `.github/scripts/call_remote_executor/attestation.py`
     - Move `EXPECTED_ATTESTATION_FIELDS` constant
     - Extract attestation methods from `RemoteExecutorCaller` as module-level functions: `decode_cose_sign1(raw_bytes, phase)`, `validate_attestation(attestation_b64, root_cert_pem, expected_pcrs, expected_nonce=None)`, `verify_certificate_chain(cert_der, cabundle, root_cert_pem)`, `verify_cose_signature(cose_array, root_cert_pem)`, `validate_pcrs(document_pcrs, expected_pcrs)`, `verify_nonce(payload_doc, expected_nonce, phase)`, `validate_output_attestation(output_attestation_b64, stdout, stderr, exit_code, root_cert_pem, expected_pcrs, expected_nonce=None)`
     - Each function accepts `root_cert_pem` and/or `expected_pcrs` as explicit parameters instead of reading from `self`
@@ -881,28 +881,28 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Move attestation-related imports (`cbor2`, `pycose.*`, `OpenSSL.crypto`, `Crypto.Util.number`, `cryptography.x509`)
     - _Requirements: 1.10_
 
-  - [ ] 48.4 Create `.github/scripts/call_remote_executor/caller.py`
+  - [x] 48.4 Create `.github/scripts/call_remote_executor/caller.py`
     - Move `RemoteExecutorCaller` class from `call_remote_executor.py`
     - Add `from .errors import CallerError`, `from .encryption import ClientEncryption`, `from . import attestation`
     - Replace attestation method bodies with thin delegation wrappers that call `attestation.*` functions passing `self.root_cert_pem` and `self.expected_pcrs`
     - Keep all HTTP methods (`health_check`, `attest`, `execute`, `poll_output`, `run`, `_generate_summary`, `generate_nonce`, `request_oidc_token`) as instance methods
     - _Requirements: 1.10, 1.13_
 
-  - [ ] 48.5 Create `.github/scripts/call_remote_executor/cli.py`
+  - [x] 48.5 Create `.github/scripts/call_remote_executor/cli.py`
     - Move `main()` function and argparse setup from `call_remote_executor.py`
     - Add `from .errors import CallerError`, `from .caller import RemoteExecutorCaller`
     - _Requirements: 1.10_
 
-  - [ ] 48.6 Create `.github/scripts/call_remote_executor/__init__.py`
+  - [x] 48.6 Create `.github/scripts/call_remote_executor/__init__.py`
     - Re-export `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`, `EXPECTED_ATTESTATION_FIELDS`, `main`
     - Define `__all__` list
     - _Requirements: 1.11, 1.13_
 
-  - [ ] 48.7 Create `.github/scripts/call_remote_executor/__main__.py`
+  - [x] 48.7 Create `.github/scripts/call_remote_executor/__main__.py`
     - Import and call `main()` from `cli.py`
     - _Requirements: 1.12_
 
-  - [ ] 48.8 Delete `.github/scripts/call_remote_executor.py` (the old single file)
+  - [x] 48.8 Delete `.github/scripts/call_remote_executor.py` (the old single file)
     - _Requirements: 1.10_
 
 - [ ] 49. Update workflow and build configuration for call_remote_executor package

@@ -329,7 +329,7 @@ class TestHealthCheckAcceptance:
         mock_response.json.return_value = {"status": status_value}
         mock_response.text = f'{{"status": "{status_value}"}}'
 
-        with patch("call_remote_executor.requests.get", return_value=mock_response):
+        with patch("call_remote_executor.caller.requests.get", return_value=mock_response):
             if status_code == 200 and status_value == "healthy":
                 result = caller.health_check()
                 assert isinstance(result, dict)
@@ -363,7 +363,7 @@ class TestExecuteHTTPErrorPropagation:
         mock_response.status_code = status_code
         mock_response.text = response_body
 
-        with patch("call_remote_executor.requests.post", return_value=mock_response):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_response):
             with pytest.raises(CallerError) as exc_info:
                 caller.execute(
                     repository_url="https://github.com/owner/repo",
@@ -653,8 +653,8 @@ class TestPollingTerminationOnCompletion:
 
         responses = [incomplete_resp] * n_incomplete + [complete_resp]
 
-        with patch("call_remote_executor.requests.post", side_effect=responses) as mock_post:
-            with patch("call_remote_executor.time.sleep"):
+        with patch("call_remote_executor.caller.requests.post", side_effect=responses) as mock_post:
+            with patch("call_remote_executor.caller.time.sleep"):
                 result = caller.poll_output("test-exec-id")
 
         assert mock_post.call_count == n_incomplete + 1
@@ -706,8 +706,8 @@ class TestPollingRetryOnTransientErrors:
 
         responses = [error_response] * k_errors + [complete_resp]
 
-        with patch("call_remote_executor.requests.post", side_effect=responses):
-            with patch("call_remote_executor.time.sleep"):
+        with patch("call_remote_executor.caller.requests.post", side_effect=responses):
+            with patch("call_remote_executor.caller.time.sleep"):
                 result = caller.poll_output("test-exec-id")
 
         assert result["stdout"] == "ok"
@@ -735,8 +735,8 @@ class TestPollingRetryOnTransientErrors:
         caller._oidc_token = "test-token"
         _setup_encryption(caller)
 
-        with patch("call_remote_executor.requests.post", side_effect=responses):
-            with patch("call_remote_executor.time.sleep"):
+        with patch("call_remote_executor.caller.requests.post", side_effect=responses):
+            with patch("call_remote_executor.caller.time.sleep"):
                 with pytest.raises(CallerError) as exc_info:
                     caller.poll_output("test-exec-id")
                 assert exc_info.value.phase == "polling"
@@ -770,8 +770,8 @@ class TestPollingRetryOnTransientErrors:
 
         side_effects = [requests.ConnectionError("timeout")] * k_errors + [complete_resp]
 
-        with patch("call_remote_executor.requests.post", side_effect=side_effects):
-            with patch("call_remote_executor.time.sleep"):
+        with patch("call_remote_executor.caller.requests.post", side_effect=side_effects):
+            with patch("call_remote_executor.caller.time.sleep"):
                 result = caller.poll_output("test-exec-id")
 
         assert result["stdout"] == "recovered"
@@ -816,7 +816,7 @@ class TestExitCodePropagation:
             "output_attestation_document": None,
         }
 
-        with patch("call_remote_executor.requests.get", return_value=health_response):
+        with patch("call_remote_executor.caller.requests.get", return_value=health_response):
             with patch.object(caller, "request_oidc_token", return_value="mock-token"):
                 with patch.object(caller, "attest", return_value=b"\x01" * 32):
                     with patch.object(caller, "execute", return_value=exec_result):
@@ -868,7 +868,7 @@ class TestSummaryContainsExecutionResults:
             "output_attestation_document": None,
         }
 
-        with patch("call_remote_executor.requests.get", return_value=health_response):
+        with patch("call_remote_executor.caller.requests.get", return_value=health_response):
             with patch.object(caller, "request_oidc_token", return_value="mock-token"):
                 with patch.object(caller, "attest", return_value=b"\x01" * 32):
                     with patch.object(caller, "execute", return_value=exec_result):
@@ -918,7 +918,7 @@ class TestOIDCTokenAcquisition:
         }
 
         with patch.dict(os.environ, env_vars, clear=False):
-            with patch("call_remote_executor.requests.get", return_value=mock_response) as mock_get:
+            with patch("call_remote_executor.caller.requests.get", return_value=mock_response) as mock_get:
                 result = caller.request_oidc_token()
 
         # Verify the returned token matches
@@ -971,7 +971,7 @@ class TestOIDCTokenTransmission:
             return original_encrypt(payload_dict)
 
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
-            with patch("call_remote_executor.requests.post", return_value=mock_response) as mock_post:
+            with patch("call_remote_executor.caller.requests.post", return_value=mock_response) as mock_post:
                 caller.execute("https://github.com/o/r", "abc", "script.sh", "tok")
 
         # OIDC token should be in the encrypted payload, not in headers
@@ -1011,8 +1011,8 @@ class TestOIDCTokenTransmission:
             return original_encrypt(payload_dict)
 
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
-            with patch("call_remote_executor.requests.post", return_value=complete_resp) as mock_post:
-                with patch("call_remote_executor.time.sleep"):
+            with patch("call_remote_executor.caller.requests.post", return_value=complete_resp) as mock_post:
+                with patch("call_remote_executor.caller.time.sleep"):
                     caller.poll_output("test-exec-id")
 
         # OIDC token should be in the encrypted payload, not in headers
@@ -1034,7 +1034,7 @@ class TestOIDCTokenTransmission:
         mock_response.status_code = 200
         mock_response.json.return_value = {"status": "healthy"}
 
-        with patch("call_remote_executor.requests.get", return_value=mock_response) as mock_get:
+        with patch("call_remote_executor.caller.requests.get", return_value=mock_response) as mock_get:
             caller.health_check()
 
         # health_check uses requests.get(url, timeout=...) — no headers kwarg
@@ -1068,7 +1068,7 @@ class TestOIDCAuthenticationErrorHandling:
         mock_response.status_code = status_code
         mock_response.text = response_body
 
-        with patch("call_remote_executor.requests.post", return_value=mock_response):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_response):
             with pytest.raises(CallerError) as exc_info:
                 caller.execute("https://github.com/o/r", "abc", "script.sh", "tok")
 
@@ -1100,8 +1100,8 @@ class TestOIDCAuthenticationErrorHandling:
         mock_response.status_code = status_code
         mock_response.text = response_body
 
-        with patch("call_remote_executor.requests.post", return_value=mock_response):
-            with patch("call_remote_executor.time.sleep"):
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_response):
+            with patch("call_remote_executor.caller.time.sleep"):
                 with pytest.raises(CallerError) as exc_info:
                     caller.poll_output("test-exec-id")
 
@@ -1156,7 +1156,7 @@ class TestOIDCAuthenticationErrorHandling:
         }
 
         with patch.dict(os.environ, env_vars, clear=False):
-            with patch("call_remote_executor.requests.get", return_value=mock_response):
+            with patch("call_remote_executor.caller.requests.get", return_value=mock_response):
                 with pytest.raises(CallerError) as exc_info:
                     caller.request_oidc_token()
 
@@ -1472,7 +1472,7 @@ class TestEncryptedEnvelopeStructure:
         mock_response.status_code = 200
         mock_response.json.return_value = {"encrypted_response": encrypted_resp}
 
-        with patch("call_remote_executor.requests.post", return_value=mock_response) as mock_post:
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_response) as mock_post:
             caller.execute(repository_url, commit_hash, script_path, github_token)
 
         # Verify the request body structure
