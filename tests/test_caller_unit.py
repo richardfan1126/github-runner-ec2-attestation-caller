@@ -741,10 +741,10 @@ class TestWorkflowValidation:
         # HPKE key exchange. Verify the caller script invocation is present.
         caller_invocations = [
             s for s in steps
-            if "call_remote_executor.py" in s.get("run", "")
+            if "call_remote_executor" in s.get("run", "")
         ]
         assert len(caller_invocations) == 1, (
-            "Each matrix job must invoke call_remote_executor.py exactly once "
+            "Each matrix job must invoke call_remote_executor exactly once "
             "(each invocation performs its own independent HPKE key exchange)"
         )
 

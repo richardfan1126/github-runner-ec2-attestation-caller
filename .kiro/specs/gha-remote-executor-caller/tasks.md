@@ -918,7 +918,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Change `[tool.hatch.build.targets.wheel]` to reference package directory `call_remote_executor`
     - _Requirements: 1.14_
 
-- [ ] 50. Checkpoint - Verify all tests pass after module split
+- [x] 50. Checkpoint - Verify all tests pass after module split
   - Run `pytest tests/` and confirm all tests pass with no import errors or regressions
   - Verify `python .github/scripts/call_remote_executor --help` works
 
