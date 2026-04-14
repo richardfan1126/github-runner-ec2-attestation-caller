@@ -905,16 +905,16 @@ Implement the client-side caller for the Remote Executor system: a Python script
   - [x] 48.8 Delete `.github/scripts/call_remote_executor.py` (the old single file)
     - _Requirements: 1.10_
 
-- [ ] 49. Update workflow and build configuration for call_remote_executor package
-  - [ ] 49.1 Update `.github/workflows/call-remote-executor.yml` invocations
+- [x] 49. Update workflow and build configuration for call_remote_executor package
+  - [x] 49.1 Update `.github/workflows/call-remote-executor.yml` invocations
     - Change `python .github/scripts/call_remote_executor.py` to `python .github/scripts/call_remote_executor` (drop `.py` suffix) in all jobs (`call-remote-executor`, `execute`, `verify-isolation`)
     - _Requirements: 1.9_
 
-  - [ ] 49.2 Update root `pyproject.toml` build configuration
+  - [x] 49.2 Update root `pyproject.toml` build configuration
     - Change `[tool.hatch.build.targets.wheel]` to reference package directory `.github/scripts/call_remote_executor`
     - _Requirements: 1.14_
 
-  - [ ] 49.3 Update `.github/scripts/pyproject.toml` build configuration
+  - [x] 49.3 Update `.github/scripts/pyproject.toml` build configuration
     - Change `[tool.hatch.build.targets.wheel]` to reference package directory `call_remote_executor`
     - _Requirements: 1.14_
 
