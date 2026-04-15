@@ -944,8 +944,8 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 53. Final checkpoint - Ensure all module split tests pass
   - Run full test suite and confirm no regressions
 
-- [ ] 54. Update `poll_output` method for per-poll output attestation validation
-  - [ ] 54.1 Add per-poll output attestation validation to `poll_output` in `caller.py`
+- [x] 54. Update `poll_output` method for per-poll output attestation validation
+  - [x] 54.1 Add per-poll output attestation validation to `poll_output` in `caller.py`
     - After decrypting each poll response, extract `output_attestation_document` from the decrypted data
     - When `output_attestation_document` is present (non-null), call `self.validate_output_attestation` with the current `stdout`, `stderr`, `exit_code` from that response, and the nonce generated for that specific poll request
     - When `output_attestation_document` is null and an `attestation_error` field is present in the decrypted response, log a warning with the `attestation_error` details and continue polling without raising
@@ -955,7 +955,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - On the final response (`complete=true`), still return `stdout`, `stderr`, `exit_code`, and `output_attestation_document`
     - _Requirements: 5.6, 5.7, 5.13, 5.14, 5.15, 6A.1, 6B.8, 6B.9, 6B.10, 6C.13_
 
-  - [ ] 54.2 Update `run` method in `caller.py` to remove post-poll `validate_output_attestation` call
+  - [x] 54.2 Update `run` method in `caller.py` to remove post-poll `validate_output_attestation` call
     - Remove the separate `validate_output_attestation` call after `poll_output` returns (output attestation is now validated inside `poll_output` on each poll response)
     - Track `output_integrity_status` based on whether all per-poll validations passed (reported by `poll_output`)
     - Update the flow to: health_check → request_oidc_token → attest → execute (encrypted) → poll_output (encrypted, with per-poll output attestation validation) → report results

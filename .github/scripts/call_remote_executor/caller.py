@@ -377,13 +377,21 @@ class RemoteExecutorCaller:
         via HPKE, and sends {encrypted_payload} (no client_public_key, no Authorization header).
         Decrypts the encrypted response from the server.
 
-        On final response (complete=true), stores the last nonce for output
-        attestation nonce verification.
+        Validates output attestation inline on each poll response:
+        - When output_attestation_document is present, validates it with the
+          current stdout, stderr, exit_code and the nonce for that poll request.
+        - When output_attestation_document is null with attestation_error, logs
+          a warning and continues.
+        - When output_attestation_document is null without attestation_error,
+          logs a warning and continues.
+
+        Tracks per-poll validation results to determine overall output_integrity_status.
 
         Logs incremental output during polling.
         Returns final decrypted response with stdout, stderr, exit_code,
-        output_attestation_document.
-        Raises CallerError on timeout, repeated HTTP failures, or decryption errors.
+        output_attestation_document, and output_integrity_status.
+        Raises CallerError on timeout, repeated HTTP failures, decryption errors,
+        or output attestation validation failures.
         """
         if not hasattr(self, "_encryption") or self._encryption is None:
             raise CallerError(
@@ -396,6 +404,8 @@ class RemoteExecutorCaller:
         consecutive_errors = 0
         prev_stdout_offset = 0
         prev_stderr_offset = 0
+        all_validations_passed = True
+        any_attestation_received = False
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -462,6 +472,7 @@ class RemoteExecutorCaller:
             # Log incremental output
             stdout = data.get("stdout", "")
             stderr = data.get("stderr", "")
+            exit_code = data.get("exit_code")
             if len(stdout) > prev_stdout_offset:
                 logger.info("stdout: %s", stdout[prev_stdout_offset:])
                 prev_stdout_offset = len(stdout)
@@ -469,13 +480,40 @@ class RemoteExecutorCaller:
                 logger.info("stderr: %s", stderr[prev_stderr_offset:])
                 prev_stderr_offset = len(stderr)
 
+            # Per-poll output attestation validation
+            output_attestation_b64 = data.get("output_attestation_document")
+            if output_attestation_b64:
+                any_attestation_received = True
+                self.validate_output_attestation(
+                    output_attestation_b64, stdout, stderr, exit_code,
+                    expected_nonce=nonce,
+                )
+            else:
+                attestation_error = data.get("attestation_error")
+                if attestation_error:
+                    logger.warning(
+                        "Output attestation not available for this poll: %s",
+                        attestation_error,
+                    )
+                else:
+                    logger.warning(
+                        "Output attestation document is null with no attestation_error"
+                    )
+                all_validations_passed = False
+
             if data.get("complete"):
-                self._last_poll_nonce = nonce
+                if any_attestation_received and all_validations_passed:
+                    output_integrity_status = "pass"
+                elif not any_attestation_received:
+                    output_integrity_status = "skipped"
+                else:
+                    output_integrity_status = "partial"
                 return {
-                    "stdout": data.get("stdout", ""),
-                    "stderr": data.get("stderr", ""),
-                    "exit_code": data.get("exit_code"),
-                    "output_attestation_document": data.get("output_attestation_document"),
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": exit_code,
+                    "output_attestation_document": output_attestation_b64,
+                    "output_integrity_status": output_integrity_status,
                 }
 
             time.sleep(self.poll_interval)
@@ -518,7 +556,7 @@ class RemoteExecutorCaller:
         """Orchestrate full flow.
 
         health_check -> request_oidc_token -> attest -> execute (encrypted)
-        -> poll_output (encrypted) -> validate_output_attestation (with nonce)
+        -> poll_output (encrypted, with per-poll output attestation validation)
         -> report results.
         Returns remote script exit code.
         """
@@ -544,29 +582,15 @@ class RemoteExecutorCaller:
         attestation_status = "pass"
         logger.info("Execution submitted: %s", execution_id)
 
-        # Poll for output (encrypted)
+        # Poll for output (encrypted, with per-poll output attestation validation)
         logger.info("Polling for execution output...")
         output = self.poll_output(execution_id)
         stdout = output["stdout"]
         stderr = output["stderr"]
         exit_code = output["exit_code"]
-        output_attestation_b64 = output.get("output_attestation_document")
+        output_integrity_status = output["output_integrity_status"]
 
         logger.info("exit_code: %s", exit_code)
-
-        # Validate output attestation with last poll nonce
-        if output_attestation_b64:
-            logger.info("Validating output attestation...")
-            last_nonce = getattr(self, "_last_poll_nonce", None)
-            self.validate_output_attestation(
-                output_attestation_b64, stdout, stderr, exit_code,
-                expected_nonce=last_nonce,
-            )
-            output_integrity_status = "pass"
-        else:
-            logger.warning("No output attestation document received, skipping output integrity verification")
-            output_integrity_status = "skipped"
-
         logger.info("Output integrity: %s", output_integrity_status)
 
         # Generate summary
