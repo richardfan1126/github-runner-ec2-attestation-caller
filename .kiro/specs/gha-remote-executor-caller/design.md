@@ -6,7 +6,7 @@ The GitHub Actions Remote Executor Caller is the client-side counterpart to the 
 
 The caller communicates with the Remote Executor server using PQ_Hybrid_KEM-based encryption for all sensitive endpoints (`/execute` and `/execution/{id}/output`). It first obtains the server's composite public key (X25519 + ML-KEM-768 encapsulation key) via the unauthenticated `/attest` endpoint (which also returns a NitroTPM attestation document for server identity verification). The composite key is returned as a separate field in the `/attest` JSON response because it exceeds the 1024-byte attestation document `public_key` field limit — the attestation document instead contains a SHA-256 fingerprint of the composite key, which the caller verifies. The caller then generates a client-side X25519 keypair, performs ML-KEM-768 encapsulation against the server's encapsulation key, and derives a shared AES-256-GCM key by combining both the X25519 ECDH shared secret and the ML-KEM-768 shared secret via HKDF-SHA256 with `info=b"pq-hybrid-shared-key"`. All request payloads (including the OIDC token) are encrypted before transmission. The OIDC token is transmitted exclusively within the encrypted payload — no `Authorization` header is used on any request.
 
-The caller validates the server's NitroTPM attestation documents at three points: (1) when the server's composite public key is retrieved via `/attest` (including fingerprint verification), (2) when the execution request is accepted via `/execute`, and (3) when the output is returned via `/execution/{id}/output`. Each request includes a unique random nonce that is verified in the returned attestation document to ensure freshness and prevent replay attacks.
+The caller validates the server's NitroTPM attestation documents at three points: (1) when the server's composite public key is retrieved via `/attest` (including fingerprint verification), (2) when the execution request is accepted via `/execute`, and (3) on every poll response from `/execution/{id}/output` that contains an `output_attestation_document` (not just on completion). Each request includes a unique random nonce that is verified in the returned attestation document to ensure freshness and prevent replay attacks. When the server fails to generate an output attestation document for a poll response, it returns `output_attestation_document: null` with an `attestation_error` field; the caller logs a warning and continues polling without failing.
 
 The workflow also supports concurrent execution isolation testing. When configured with a `concurrency_count` greater than 1, the workflow dispatches multiple independent caller script invocations in parallel — each with its own PQ_Hybrid_KEM session, OIDC token, and attestation validation. Each execution's build script generates its own unique marker at runtime (via `/proc/sys/kernel/random/uuid`), so no marker is passed from the workflow or included in the encrypted payload. After all executions complete, the workflow extracts the `MARKER:<value>` from each execution's stdout and verifies that all markers are unique and that each execution passes filesystem and process isolation tests, demonstrating that the Remote Executor server properly isolates concurrent executions.
 
@@ -84,11 +84,15 @@ sequenceDiagram
         RE-->>CS: {encrypted_response: "base64"}
         CS->>CS: Decrypt response → {stdout, stderr, complete, exit_code, output_attestation_document}
         CS->>CS: Log incremental output
+        alt output_attestation_document present
+            CS->>CS: Validate output attestation (COSE Sign1 + PKI + PCR4/PCR7)
+            CS->>CS: Verify nonce in output attestation matches sent nonce
+            CS->>CS: Extract user_data digest, compute SHA-256 of current canonical output, compare
+        else output_attestation_document null with attestation_error
+            CS->>CS: Log warning with attestation_error details, continue
+        end
     end
 
-    CS->>CS: Validate output attestation (COSE Sign1 + PKI + PCR4/PCR7)
-    CS->>CS: Verify nonce in output attestation matches last sent nonce
-    CS->>CS: Extract user_data digest, compute SHA-256 of canonical output, compare
     CS->>GHA: Exit with remote exit_code, print results
     GHA->>GHA: Write $GITHUB_STEP_SUMMARY
 ```
@@ -467,13 +471,19 @@ class RemoteExecutorCaller:
         - No Authorization header
         - Decrypts the encrypted response
         
-        On final response (complete=true), verifies the nonce in the
-        output_attestation_document matches the nonce sent in that request.
+        On every poll response that contains an output_attestation_document:
+        - Validates the output attestation (COSE Sign1 + PKI + PCR4/PCR7)
+        - Verifies the nonce in the output_attestation_document matches the nonce sent in that request
+        - Computes SHA-256 of the current canonical output and compares against the user_data digest
+        
+        When output_attestation_document is null and an attestation_error field is present,
+        logs a warning with the error details and continues polling without failing.
         
         Logs incremental output during polling.
         Returns final decrypted response with stdout, stderr, exit_code,
         output_attestation_document.
-        Raises CallerError on timeout, repeated HTTP failures, or decryption errors.
+        Raises CallerError on timeout, repeated HTTP failures, decryption errors,
+        or output attestation validation failures.
         """
 
     def validate_output_attestation(self, output_attestation_b64: str,
@@ -498,8 +508,11 @@ class RemoteExecutorCaller:
         """
         Orchestrate full flow:
         health_check → request_oidc_token → attest (get composite server public key, verify fingerprint, PQ_Hybrid_KEM key exchange)
-        → execute (encrypted) → validate_attestation → poll_output (encrypted)
-        → validate_output_attestation → report results.
+        → execute (encrypted) → validate_attestation → poll_output (encrypted, with per-poll output attestation validation)
+        → report results.
+        Output attestation validation (COSE Sign1 + PKI + PCR + nonce + digest comparison)
+        is performed inside poll_output on each poll response that contains an
+        output_attestation_document, not as a separate step after polling.
         Returns remote script exit code.
         """
 ```
@@ -851,7 +864,38 @@ Plaintext payload (before encryption):
 }
 ```
 
-Decrypted response payload:
+Decrypted response payload (running — not yet complete):
+```json
+{
+  "execution_id": "uuid-v4",
+  "status": "running",
+  "stdout": "partial output so far...",
+  "stderr": "",
+  "stdout_offset": 512,
+  "stderr_offset": 0,
+  "complete": false,
+  "exit_code": null,
+  "output_attestation_document": "<base64-encoded-cbor>"
+}
+```
+
+Decrypted response payload (running — attestation generation failed):
+```json
+{
+  "execution_id": "uuid-v4",
+  "status": "running",
+  "stdout": "partial output so far...",
+  "stderr": "",
+  "stdout_offset": 512,
+  "stderr_offset": 0,
+  "complete": false,
+  "exit_code": null,
+  "output_attestation_document": null,
+  "attestation_error": "NSM device temporarily unavailable"
+}
+```
+
+Decrypted response payload (completed):
 ```json
 {
   "execution_id": "uuid-v4",
@@ -950,11 +994,11 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 4A.7**
 
-### Property 3: Output integrity verification
+### Property 3: Output integrity verification (per-poll)
 
-*For any* stdout string, stderr string, and integer exit code, if an output attestation document's `user_data` field contains the SHA-256 hex digest of the canonical output `stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}`, then `validate_output_attestation` should return True (assuming signature verification passes). If any of stdout, stderr, or exit_code is altered after the digest was computed, `validate_output_attestation` should raise a `CallerError`.
+*For any* stdout string, stderr string, and integer exit code (representing the current output at any point during polling), if an output attestation document's `user_data` field contains the SHA-256 hex digest of the canonical output `stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}`, then `validate_output_attestation` should return True (assuming signature verification passes). If any of stdout, stderr, or exit_code is altered after the digest was computed, `validate_output_attestation` should raise a `CallerError`. This validation applies to every poll response that contains an `output_attestation_document`, not just the final completion response.
 
-**Validates: Requirements 6B.8, 6B.9, 6B.10, 6B.12**
+**Validates: Requirements 5.6, 5.7, 6A.1, 6B.8, 6B.9, 6B.10, 6B.12**
 
 ### Property 4: Health check acceptance
 
@@ -968,11 +1012,11 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 3.8**
 
-### Property 6: Polling termination on completion
+### Property 6: Polling termination on completion with per-poll output attestation
 
-*For any* sequence of encrypted poll responses where the first N decrypted responses have `complete: false` and the (N+1)th decrypted response has `complete: true`, the `poll_output` method should make exactly N+1 HTTP POST requests (each with an encrypted payload) and return the final decrypted response containing `stdout`, `stderr`, `exit_code`, and `output_attestation_document`.
+*For any* sequence of encrypted poll responses where the first N decrypted responses have `complete: false` and the (N+1)th decrypted response has `complete: true`, and each response contains an `output_attestation_document`, the `poll_output` method should make exactly N+1 HTTP POST requests (each with an encrypted payload), validate the output attestation on each poll response (COSE Sign1 + PKI + PCR + nonce + digest), and return the final decrypted response containing `stdout`, `stderr`, `exit_code`, and `output_attestation_document`.
 
-**Validates: Requirements 5.6, 5.7**
+**Validates: Requirements 5.6, 5.7, 5.14**
 
 ### Property 7: Polling retry on transient errors
 
@@ -1106,6 +1150,12 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 1.11, 1.12, 1.13**
 
+### Property 29: Null output attestation with attestation_error handling
+
+*For any* poll response where `output_attestation_document` is null and an `attestation_error` field is present (a non-empty string), the `poll_output` method should log a warning containing the `attestation_error` details and continue polling without raising a `CallerError`. The poll loop should not fail or skip subsequent polls due to a null attestation document on a non-final response.
+
+**Validates: Requirements 5.15, 6C.13**
+
 ## Error Handling
 
 ### Error Categories and Responses
@@ -1150,7 +1200,7 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | Polling | HTTP 403 Forbidden | Raise `CallerError(phase="polling")` with repository not authorized message (no retry) |
 | Polling | Decryption failure on poll response | Raise `CallerError(phase="polling")` with decryption error details |
 | Polling | Timeout exceeded | Raise `CallerError(phase="polling")` with elapsed duration |
-| Output Attestation | Null/missing document | Log warning, continue (verification skipped) |
+| Output Attestation | Null/missing document with `attestation_error` | Log warning with `attestation_error` details, continue polling (output integrity verification skipped for that poll response) |
 | Output Attestation | Invalid base64/CBOR/COSE structure | Raise `CallerError(phase="output_attestation")` |
 | Output Attestation | Certificate chain validation failure | Raise `CallerError(phase="output_attestation")` with PKI details |
 | Output Attestation | COSE signature verification failure | Raise `CallerError(phase="output_attestation")` with signature error |
@@ -1214,8 +1264,8 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 2. **Attestation structural field validation**: Generate random dicts with random subsets of expected fields, verify `validate_attestation` accepts iff all required fields present (with COSE Sign1 wrapping and test signature).
    `# Feature: gha-remote-executor-caller, Property 2: Attestation structural field validation`
 
-3. **Output integrity verification**: Generate random stdout, stderr, exit_code. Compute canonical output and SHA-256 digest. Build a COSE Sign1 attestation with that digest in user_data (signed with test key). Verify `validate_output_attestation` returns True. Then mutate one of stdout/stderr/exit_code and verify it raises.
-   `# Feature: gha-remote-executor-caller, Property 3: Output integrity verification`
+3. **Output integrity verification (per-poll)**: Generate random stdout, stderr, exit_code (representing current output at any point during polling). Compute canonical output and SHA-256 digest. Build a COSE Sign1 attestation with that digest in user_data (signed with test key). Verify `validate_output_attestation` returns True. Then mutate one of stdout/stderr/exit_code and verify it raises. This validates that per-poll output attestation works for both intermediate and final responses.
+   `# Feature: gha-remote-executor-caller, Property 3: Output integrity verification (per-poll)`
 
 4. **Health check acceptance**: Generate random HTTP status codes and random `status` field values. Verify `health_check` succeeds iff status code is 200 and status field is "healthy".
    `# Feature: gha-remote-executor-caller, Property 4: Health check acceptance`
@@ -1223,8 +1273,8 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 5. **Execute HTTP error propagation**: Generate random 4xx/5xx status codes and response bodies. Verify `execute` raises `CallerError` with the status code.
    `# Feature: gha-remote-executor-caller, Property 5: Execute HTTP error propagation`
 
-6. **Polling termination on completion**: Generate random N (0-20), create a mock that returns encrypted `complete: false` N times then encrypted `complete: true`. Verify exactly N+1 POST requests made and final decrypted response fields extracted.
-   `# Feature: gha-remote-executor-caller, Property 6: Polling termination on completion`
+6. **Polling termination on completion with per-poll output attestation**: Generate random N (0-20), create a mock that returns encrypted `complete: false` N times then encrypted `complete: true`. Each mock response includes an `output_attestation_document` with a valid COSE Sign1 structure containing the SHA-256 digest of the current output. Verify exactly N+1 POST requests made, output attestation validated on each poll response, and final decrypted response fields extracted.
+   `# Feature: gha-remote-executor-caller, Property 6: Polling termination on completion with per-poll output attestation`
 
 7. **Polling retry on transient errors**: Generate random K < max_retries consecutive errors followed by success. Verify polling recovers. Generate K >= max_retries and verify CallerError raised.
    `# Feature: gha-remote-executor-caller, Property 7: Polling retry on transient errors`
@@ -1294,6 +1344,9 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 26. **Public API preservation for call_remote_executor**: For each public symbol, verify it is importable from both the package top-level and the submodule, and that both references are the same object. For `RemoteExecutorCaller`, verify all public and private attestation delegation methods exist and are callable.
     `# Feature: gha-remote-executor-caller, Property 28: Public API preservation for call_remote_executor`
 
+27. **Null output attestation with attestation_error handling**: Generate random poll response sequences where some responses have `output_attestation_document: null` with an `attestation_error` string. Verify `poll_output` logs a warning containing the `attestation_error` details and continues polling without raising. Verify that subsequent poll responses with valid `output_attestation_document` are still validated normally.
+    `# Feature: gha-remote-executor-caller, Property 29: Null output attestation with attestation_error handling`
+
 **Unit tests** (specific examples and edge cases):
 
 - Empty `server_url` raises error (Req 1.5)
@@ -1302,7 +1355,10 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Connection refused raises `CallerError` with phase "health_check" (Req 8.4)
 - Connection refused raises `CallerError` with phase "execute" (Req 3.9)
 - Connection refused raises `CallerError` with phase "attest" (Req 11.9)
-- Null `output_attestation_document` logs warning and continues (Req 6C.13)
+- Null `output_attestation_document` with `attestation_error` on non-complete poll response logs warning and continues (Req 5.15, 6C.13)
+- Null `output_attestation_document` without `attestation_error` on non-complete poll response logs warning and continues (Req 6C.13)
+- Output attestation validation on a running (non-complete) poll response succeeds when document is valid (Req 5.6, 5.7)
+- Output attestation nonce verification on a running poll response uses the nonce from that specific poll request (Req 5.14)
 - Invalid base64 in attestation raises `CallerError` (Req 4A.4)
 - Invalid CBOR in attestation raises `CallerError` (Req 4A.5)
 - CBOR result that is not a 4-element array raises `CallerError` with COSE structure error (Req 4A.5)

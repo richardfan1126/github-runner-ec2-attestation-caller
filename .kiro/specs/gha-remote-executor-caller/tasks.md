@@ -944,6 +944,80 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 53. Final checkpoint - Ensure all module split tests pass
   - Run full test suite and confirm no regressions
 
+- [ ] 54. Update `poll_output` method for per-poll output attestation validation
+  - [ ] 54.1 Add per-poll output attestation validation to `poll_output` in `caller.py`
+    - After decrypting each poll response, extract `output_attestation_document` from the decrypted data
+    - When `output_attestation_document` is present (non-null), call `self.validate_output_attestation` with the current `stdout`, `stderr`, `exit_code` from that response, and the nonce generated for that specific poll request
+    - When `output_attestation_document` is null and an `attestation_error` field is present in the decrypted response, log a warning with the `attestation_error` details and continue polling without raising
+    - When `output_attestation_document` is null without `attestation_error`, log a warning and continue polling
+    - Track per-poll validation results to determine overall `output_integrity_status`
+    - Remove the `_last_poll_nonce` storage (no longer needed since nonce verification is done per-poll)
+    - On the final response (`complete=true`), still return `stdout`, `stderr`, `exit_code`, and `output_attestation_document`
+    - _Requirements: 5.6, 5.7, 5.13, 5.14, 5.15, 6A.1, 6B.8, 6B.9, 6B.10, 6C.13_
+
+  - [ ] 54.2 Update `run` method in `caller.py` to remove post-poll `validate_output_attestation` call
+    - Remove the separate `validate_output_attestation` call after `poll_output` returns (output attestation is now validated inside `poll_output` on each poll response)
+    - Track `output_integrity_status` based on whether all per-poll validations passed (reported by `poll_output`)
+    - Update the flow to: health_check → request_oidc_token → attest → execute (encrypted) → poll_output (encrypted, with per-poll output attestation validation) → report results
+    - _Requirements: 5.6, 5.7, 7.5_
+
+- [ ] 55. Checkpoint - Ensure per-poll output attestation code compiles and existing tests are updated
+  - Update existing tests that mock `poll_output` to include `output_attestation_document` in non-complete responses where needed
+  - Update existing tests that verify the `run()` flow to reflect that `validate_output_attestation` is no longer called separately after polling
+  - Ensure all existing tests pass with the updated `poll_output` and `run` signatures
+
+- [ ] 56. Write property tests for per-poll output attestation
+  - [ ] 56.1 Update Property 3 test for per-poll output integrity verification
+    - **Property 3: Output integrity verification (per-poll)**
+    - Generate random stdout, stderr, exit_code representing current output at any point during polling (not just final)
+    - Compute canonical output and SHA-256 digest, build COSE Sign1 attestation with that digest in user_data
+    - Verify `validate_output_attestation` returns True for both intermediate and final poll responses
+    - Mutate one of stdout/stderr/exit_code and verify it raises `CallerError`
+    - **Validates: Requirements 6B.8, 6B.9, 6B.10, 6B.12**
+
+  - [ ] 56.2 Update Property 6 test for per-poll output attestation validation
+    - **Property 6: Polling termination on completion with per-poll output attestation**
+    - Generate random N (0-20), create a mock that returns encrypted `complete: false` N times then encrypted `complete: true`
+    - Each mock response includes an `output_attestation_document` with a valid COSE Sign1 structure containing the SHA-256 digest of the current output
+    - Verify exactly N+1 POST requests made, output attestation validated on each poll response (not just final), and final decrypted response fields extracted
+    - **Validates: Requirements 5.6, 5.7, 5.14**
+
+  - [ ] 56.3 Write Property 29 test for null output attestation with attestation_error handling
+    - **Property 29: Null output attestation with attestation_error handling**
+    - Generate random poll response sequences where some responses have `output_attestation_document: null` with an `attestation_error` string
+    - Verify `poll_output` logs a warning containing the `attestation_error` details and continues polling without raising `CallerError`
+    - Verify that subsequent poll responses with valid `output_attestation_document` are still validated normally
+    - **Validates: Requirements 5.15, 6C.13**
+
+- [ ] 57. Write unit tests for per-poll output attestation
+  - [ ] 57.1 Write unit test for null `output_attestation_document` with `attestation_error` on non-complete poll
+    - Mock a poll response with `complete: false`, `output_attestation_document: null`, and `attestation_error: "TPM busy"` (or similar)
+    - Verify `poll_output` logs a warning containing the `attestation_error` details and continues polling
+    - _Requirements: 5.15, 6C.13_
+
+  - [ ] 57.2 Write unit test for null `output_attestation_document` without `attestation_error` on non-complete poll
+    - Mock a poll response with `complete: false`, `output_attestation_document: null`, and no `attestation_error` field
+    - Verify `poll_output` logs a warning and continues polling
+    - _Requirements: 6C.13_
+
+  - [ ] 57.3 Write unit test for output attestation validation on a running (non-complete) poll response
+    - Mock a poll response with `complete: false` and a valid `output_attestation_document`
+    - Verify `poll_output` calls `validate_output_attestation` with the current stdout, stderr, exit_code from that response
+    - _Requirements: 5.6, 5.7_
+
+  - [ ] 57.4 Write unit test for output attestation nonce verification uses per-poll nonce
+    - Mock multiple poll responses, each with a valid `output_attestation_document`
+    - Verify that each call to `validate_output_attestation` receives the nonce generated for that specific poll request (not a shared or final nonce)
+    - _Requirements: 5.14_
+
+  - [ ] 57.5 Update existing unit tests for `run()` flow to reflect per-poll attestation
+    - Update tests that verify the `run()` method flow to confirm `validate_output_attestation` is no longer called separately after `poll_output`
+    - Verify `run()` calls methods in correct order: health_check → request_oidc_token → attest → execute → poll_output → report results (no separate validate_output_attestation step)
+    - _Requirements: 5.6, 5.7, 7.5_
+
+- [ ] 58. Final checkpoint - Ensure all per-poll output attestation tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP
@@ -959,3 +1033,4 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - Tasks 33-40 cover concurrent execution isolation support (Requirements 1.8, 2.5-2.14, 17; Properties 22-25)
 - Tasks 41-47 cover PQ_Hybrid_KEM migration from HPKE (Requirements 11A, 12.3, 13.1-13.7; Properties 17, 21, 26, 27)
 - Tasks 48-53 cover module split refactoring for call_remote_executor (Requirements 1.9-1.14; Property 28). The `verify_isolation.py` script remains as a single file.
+- Tasks 54-58 cover per-poll output attestation validation (Requirements 5.6, 5.7, 5.14, 5.15, 6A.1, 6B.8-6B.12, 6C.13; Properties 3, 6, 29). The `poll_output` method now validates output attestation on every poll response, and `run()` no longer calls `validate_output_attestation` separately.

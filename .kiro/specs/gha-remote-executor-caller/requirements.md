@@ -24,7 +24,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 - **Remote_Executor_Server**: The already-deployed HTTP server (specified in the `github-actions-remote-executor` spec) that executes scripts and returns attestation documents
 - **Sample_Build_Script**: A shell script included in the repository that serves as the payload for remote execution
 - **Attestation_Document**: Base64-encoded COSE Sign1 structure returned by the Remote Executor server, signed by the NitroTPM, proving the server's execution environment identity. Returned unencrypted from GET /attest (containing the Server_Public_Key in the `public_key` field) and within the encrypted response from POST /execute. The outer CBOR decoding yields a 4-element array: [protected_header, unprotected_header, payload, signature]. The payload is itself CBOR-encoded and contains the attestation fields (module_id, pcrs, certificate, cabundle, user_data, nonce, public_key, etc.)
-- **Output_Attestation_Document**: Base64-encoded COSE Sign1 structure returned by the Remote Executor server within the encrypted response from POST /execution/{id}/output when execution is complete, containing a SHA-256 digest of the script output in the user_data field of the payload
+- **Output_Attestation_Document**: Base64-encoded COSE Sign1 structure returned by the Remote Executor server within the encrypted response from POST /execution/{id}/output on every poll response (regardless of execution status: running, completed, failed, or timed_out), containing a SHA-256 digest of the current Script_Output (stdout, stderr, and exit_code at that point in time) in the user_data field of the payload. When output attestation generation fails on the server, the response includes an `attestation_error` field and `output_attestation_document` is set to null.
 - **COSE_Sign1**: CBOR Object Signing and Encryption Sign1 structure — a CBOR array of 4 elements [protected_header, unprotected_header, payload, signature] used to carry a signed attestation payload
 - **Execution_ID**: UUID returned by the Remote Executor server that uniquely identifies a script execution request
 - **CBOR**: Concise Binary Object Representation — the binary encoding format used for attestation documents and COSE structures
@@ -171,16 +171,19 @@ The caller script is organized as a Python package (not a single file) under `.g
 2. THE Caller_Script SHALL encrypt the output request payload using the same Shared_Key derived during the `/execute` PQ_Hybrid_KEM key exchange
 3. THE encrypted output request payload SHALL contain the `oidc_token` field and a `nonce` field
 13. THE Caller_Script SHALL generate a unique random nonce for each `/execution/{id}/output` request
-14. WHEN the execution is complete and the decrypted response contains an Output_Attestation_Document, THE Caller_Script SHALL verify that the nonce in the Output_Attestation_Document matches the nonce that was sent in that polling request
+14. WHEN the decrypted poll response contains an Output_Attestation_Document, THE Caller_Script SHALL verify that the nonce in the Output_Attestation_Document matches the nonce that was sent in that polling request
 4. THE Caller_Script SHALL poll at a configurable interval with a default of 5 seconds
 5. WHEN the Caller_Script receives an encrypted response, THE Caller_Script SHALL decrypt the response using the Shared_Key
-6. WHILE the decrypted response field `complete` is false, THE Caller_Script SHALL continue polling
-7. WHEN the decrypted response field `complete` is true, THE Caller_Script SHALL extract `stdout`, `stderr`, `exit_code`, and `output_attestation_document` from the decrypted response
-8. THE Caller_Script SHALL enforce a configurable maximum polling duration with a default of 10 minutes
-9. IF the maximum polling duration is exceeded, THEN THE Caller_Script SHALL fail the workflow step with a timeout error
-10. IF a polling request fails with an HTTP error, THEN THE Caller_Script SHALL retry up to a configurable number of times before failing
-11. THE Caller_Script SHALL log incremental output during polling to provide real-time feedback in the workflow log
-12. THE encrypted output request payload SHALL include an optional `offset` field to support incremental output retrieval
+6. THE Caller_Script SHALL extract the `output_attestation_document` field from every decrypted poll response, regardless of execution status (running, completed, failed, or timed_out)
+7. WHEN the decrypted poll response contains an Output_Attestation_Document, THE Caller_Script SHALL validate the output attestation on that poll response (not deferred to completion)
+8. WHILE the decrypted response field `complete` is false, THE Caller_Script SHALL continue polling
+9. WHEN the decrypted response field `complete` is true, THE Caller_Script SHALL extract `stdout`, `stderr`, `exit_code`, and `output_attestation_document` from the decrypted response
+10. THE Caller_Script SHALL enforce a configurable maximum polling duration with a default of 10 minutes
+11. IF the maximum polling duration is exceeded, THEN THE Caller_Script SHALL fail the workflow step with a timeout error
+12. IF a polling request fails with an HTTP error, THEN THE Caller_Script SHALL retry up to a configurable number of times before failing
+13. THE Caller_Script SHALL log incremental output during polling to provide real-time feedback in the workflow log
+14. THE encrypted output request payload SHALL include an optional `offset` field to support incremental output retrieval
+15. WHEN a decrypted poll response contains `output_attestation_document` set to null and an `attestation_error` field, THE Caller_Script SHALL log a warning with the attestation error details and continue polling without failing
 
 ### Requirement 6: Output Attestation Validation
 
@@ -190,7 +193,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 
 ##### 6A: COSE Sign1 Parsing and Cryptographic Verification
 
-1. WHEN the execution is complete and an Output_Attestation_Document is present, THE Caller_Script SHALL decode the Output_Attestation_Document from base64 to binary
+1. WHEN a decrypted poll response contains an Output_Attestation_Document (on any poll, not only on completion), THE Caller_Script SHALL decode the Output_Attestation_Document from base64 to binary
 2. THE Caller_Script SHALL parse the decoded binary as a CBOR-encoded COSE_Sign1 structure (a 4-element array)
 3. THE Caller_Script SHALL CBOR-decode the payload element of the COSE_Sign1 array to extract the attestation document fields
 4. THE Caller_Script SHALL validate the Signing_Certificate from the output attestation against the Certificate_Chain and Root_CA_Certificate using the same PKI validation as Requirement 4B
@@ -200,15 +203,15 @@ The caller script is organized as a Python package (not a single file) under `.g
 
 ##### 6B: Output Integrity Verification
 
-8. THE Caller_Script SHALL compute the SHA-256 digest of the returned script output (stdout and stderr concatenated or as defined by the server)
+8. THE Caller_Script SHALL compute the SHA-256 digest of the current script output at each poll (stdout, stderr, and exit_code as available at that point in time)
 9. THE Caller_Script SHALL extract the user_data field from the CBOR-decoded payload of the Output_Attestation_Document
 10. THE Caller_Script SHALL compare the computed SHA-256 digest against the digest in the user_data field of the Output_Attestation_Document
-11. IF the digests match, THEN THE Caller_Script SHALL log that output integrity verification succeeded
+11. IF the digests match, THEN THE Caller_Script SHALL log that output integrity verification succeeded for that poll response
 12. IF the digests do not match, THEN THE Caller_Script SHALL fail the workflow step with an integrity verification error
 
 ##### 6C: Error Handling
 
-13. IF the Output_Attestation_Document is null or missing, THEN THE Caller_Script SHALL log a warning and continue without output integrity verification
+13. IF the Output_Attestation_Document is null in a poll response and an `attestation_error` field is present, THEN THE Caller_Script SHALL log a warning with the attestation error details and continue without output integrity verification for that poll
 14. IF the CBOR parsing of the Output_Attestation_Document fails, THEN THE Caller_Script SHALL fail the workflow step with a parsing error
 
 ### Requirement 7: Workflow Result Reporting
@@ -355,7 +358,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 
 #### Acceptance Criteria
 
-1. THE Caller_Script SHALL execute the communication flow in this order: health_check → request_oidc_token → attest (get composite server public key, verify fingerprint) → generate Client_Keypair → perform PQ_Hybrid_KEM (X25519 ECDH + ML-KEM-768 encapsulation) → derive Shared_Key → encrypt and send /execute → decrypt /execute response → validate attestation → encrypt and send /output polls → decrypt /output responses → validate output attestation
+1. THE Caller_Script SHALL execute the communication flow in this order: health_check → request_oidc_token → attest (get composite server public key, verify fingerprint) → generate Client_Keypair → perform PQ_Hybrid_KEM (X25519 ECDH + ML-KEM-768 encapsulation) → derive Shared_Key → encrypt and send /execute → decrypt /execute response → validate attestation → encrypt and send /output polls → decrypt /output responses → validate output attestation on each poll response
 2. THE Caller_Script SHALL reuse the same Shared_Key for all `/execution/{id}/output` requests within a single execution session
 3. THE Caller_Script SHALL NOT send any unencrypted request payloads to the `/execute` or `/execution/{id}/output` endpoints
 4. THE `/health` endpoint SHALL remain unencrypted (plain HTTP GET with no request body)
