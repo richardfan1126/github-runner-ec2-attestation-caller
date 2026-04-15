@@ -648,7 +648,7 @@ class TestPollingTerminationOnCompletion:
             "stderr": stderr_val,
             "complete": True,
             "exit_code": exit_code_val,
-            "output_attestation_document": "some_b64_doc",
+            "output_attestation_document": None,
         })
 
         responses = [incomplete_resp] * n_incomplete + [complete_resp]
@@ -661,7 +661,6 @@ class TestPollingTerminationOnCompletion:
         assert result["stdout"] == stdout_val
         assert result["stderr"] == stderr_val
         assert result["exit_code"] == exit_code_val
-        assert result["output_attestation_document"] == "some_b64_doc"
 
 
 # ---------------------------------------------------------------------------
@@ -814,6 +813,7 @@ class TestExitCodePropagation:
             "stderr": "err",
             "exit_code": exit_code,
             "output_attestation_document": None,
+            "output_integrity_status": "skipped",
         }
 
         with patch("call_remote_executor.caller.requests.get", return_value=health_response):
@@ -824,10 +824,6 @@ class TestExitCodePropagation:
                             result = caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
 
         assert result == exit_code
-
-
-# ---------------------------------------------------------------------------
-# Property 9: Summary contains execution results
 # ---------------------------------------------------------------------------
 
 # Feature: gha-remote-executor-caller, Property 9: Summary contains execution results
@@ -866,6 +862,7 @@ class TestSummaryContainsExecutionResults:
             "stderr": stderr_val,
             "exit_code": exit_code_val,
             "output_attestation_document": None,
+            "output_integrity_status": "skipped",
         }
 
         with patch("call_remote_executor.caller.requests.get", return_value=health_response):

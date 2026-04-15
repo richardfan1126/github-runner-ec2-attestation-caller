@@ -1781,7 +1781,7 @@ class TestEncryptedPollOutput:
             "stderr": "some warnings",
             "complete": True,
             "exit_code": 42,
-            "output_attestation_document": "attest-b64",
+            "output_attestation_document": None,
         })
 
         with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
@@ -1790,12 +1790,10 @@ class TestEncryptedPollOutput:
         assert result["stdout"] == "build output"
         assert result["stderr"] == "some warnings"
         assert result["exit_code"] == 42
-        assert result["output_attestation_document"] == "attest-b64"
 
-    def test_poll_output_stores_last_nonce_on_completion(self):
-        """poll_output stores the last nonce for output attestation verification."""
+    def test_poll_output_returns_output_integrity_status(self):
+        """poll_output returns output_integrity_status based on per-poll attestation validation."""
         caller, server_enc = self._setup_caller_with_encryption()
-        fixed_nonce = "f1e2d3c4" * 8
 
         mock_resp = self._make_encrypted_response(server_enc, {
             "stdout": "",
@@ -1805,11 +1803,11 @@ class TestEncryptedPollOutput:
             "output_attestation_document": None,
         })
 
-        with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
-            with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
-                caller.poll_output("exec-1")
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("exec-1")
 
-        assert caller._last_poll_nonce == fixed_nonce
+        # No attestation documents received, so status should be "skipped"
+        assert result["output_integrity_status"] == "skipped"
 
     def test_poll_output_without_encryption_raises_caller_error(self):
         """poll_output without prior attest() raises CallerError."""
@@ -1832,7 +1830,7 @@ class TestRunOrchestrationFlow:
 
     def test_run_calls_methods_in_correct_order(self):
         """run() calls health_check → request_oidc_token → attest → execute
-        → poll_output → validate_output_attestation in that order.
+        → poll_output in that order (output attestation is validated per-poll inside poll_output).
         Validates: Requirement 16.1"""
         caller = _make_caller()
         call_order = []
@@ -1850,7 +1848,8 @@ class TestRunOrchestrationFlow:
             "stdout": "hello",
             "stderr": "",
             "exit_code": 0,
-            "output_attestation_document": "b3V0cHV0",
+            "output_attestation_document": None,
+            "output_integrity_status": "skipped",
         }
 
         def mock_health_check():
@@ -1871,20 +1870,14 @@ class TestRunOrchestrationFlow:
 
         def mock_poll_output(execution_id):
             call_order.append("poll_output")
-            caller._last_poll_nonce = "poll-nonce-123"
             return poll_result
-
-        def mock_validate_output_attestation(*args, **kwargs):
-            call_order.append("validate_output_attestation")
-            return True
 
         with patch.object(caller, "health_check", side_effect=mock_health_check):
             with patch.object(caller, "request_oidc_token", side_effect=mock_request_oidc_token):
                 with patch.object(caller, "attest", side_effect=mock_attest):
                     with patch.object(caller, "execute", side_effect=mock_execute):
                         with patch.object(caller, "poll_output", side_effect=mock_poll_output):
-                            with patch.object(caller, "validate_output_attestation", side_effect=mock_validate_output_attestation):
-                                result = caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
+                            result = caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
 
         assert result == 0
         assert call_order == [
@@ -1893,11 +1886,10 @@ class TestRunOrchestrationFlow:
             "attest",
             "execute",
             "poll_output",
-            "validate_output_attestation",
         ]
 
-    def test_run_passes_last_poll_nonce_to_validate_output_attestation(self):
-        """run() passes _last_poll_nonce as expected_nonce to validate_output_attestation.
+    def test_run_reads_output_integrity_status_from_poll_output(self):
+        """run() reads output_integrity_status from poll_output result (per-poll validation).
         Validates: Requirement 16.1"""
         caller = _make_caller()
 
@@ -1910,28 +1902,18 @@ class TestRunOrchestrationFlow:
             "stdout": "out",
             "stderr": "err",
             "exit_code": 0,
-            "output_attestation_document": "b3V0cHV0",
+            "output_attestation_document": None,
+            "output_integrity_status": "pass",
         }
-
-        captured_kwargs = {}
-
-        def mock_poll_output(execution_id):
-            caller._last_poll_nonce = "the-last-nonce"
-            return poll_result
-
-        def mock_validate_output_attestation(*args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return True
 
         with patch.object(caller, "health_check", return_value={"status": "healthy"}):
             with patch.object(caller, "request_oidc_token", return_value="mock-token"):
                 with patch.object(caller, "attest", return_value=b"\x01" * 32):
                     with patch.object(caller, "execute", return_value=exec_result):
-                        with patch.object(caller, "poll_output", side_effect=mock_poll_output):
-                            with patch.object(caller, "validate_output_attestation", side_effect=mock_validate_output_attestation):
-                                caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
+                        with patch.object(caller, "poll_output", return_value=poll_result):
+                            caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
 
-        assert captured_kwargs.get("expected_nonce") == "the-last-nonce"
+        assert "pass" in caller.summary
 
     def test_attest_failure_prevents_execute(self):
         """If attest() fails, execute() is never called.
@@ -1971,6 +1953,7 @@ class TestRunOrchestrationFlow:
             "stderr": "",
             "exit_code": 0,
             "output_attestation_document": None,
+            "output_integrity_status": "skipped",
         }
 
         with patch.object(caller, "health_check", return_value={"status": "healthy"}):
@@ -2002,7 +1985,9 @@ class TestRunOrchestrationFlow:
         assert "hpke" in exc_info.value.message.lower() or "attest" in exc_info.value.message.lower()
 
     def test_run_skips_output_attestation_when_null(self):
-        """run() skips validate_output_attestation when output_attestation_document is None.
+        """run() does not call validate_output_attestation separately — per-poll validation
+        is handled inside poll_output. When output_attestation_document is None,
+        poll_output reports output_integrity_status as 'skipped'.
         Validates: Requirement 16.1"""
         caller = _make_caller()
 
@@ -2016,6 +2001,7 @@ class TestRunOrchestrationFlow:
             "stderr": "",
             "exit_code": 0,
             "output_attestation_document": None,
+            "output_integrity_status": "skipped",
         }
 
         with patch.object(caller, "health_check", return_value={"status": "healthy"}):
@@ -2023,11 +2009,9 @@ class TestRunOrchestrationFlow:
                 with patch.object(caller, "attest", return_value=b"\x01" * 32):
                     with patch.object(caller, "execute", return_value=exec_result):
                         with patch.object(caller, "poll_output", return_value=poll_result):
-                            with patch.object(caller, "validate_output_attestation") as mock_voa:
-                                result = caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
+                            result = caller.run("https://github.com/o/r", "abc", "script.sh", "tok")
 
         assert result == 0
-        mock_voa.assert_not_called()
         assert "skipped" in caller.summary
 
 

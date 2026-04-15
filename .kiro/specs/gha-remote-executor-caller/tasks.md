@@ -961,7 +961,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Update the flow to: health_check → request_oidc_token → attest → execute (encrypted) → poll_output (encrypted, with per-poll output attestation validation) → report results
     - _Requirements: 5.6, 5.7, 7.5_
 
-- [ ] 55. Checkpoint - Ensure per-poll output attestation code compiles and existing tests are updated
+- [x] 55. Checkpoint - Ensure per-poll output attestation code compiles and existing tests are updated
   - Update existing tests that mock `poll_output` to include `output_attestation_document` in non-complete responses where needed
   - Update existing tests that verify the `run()` flow to reflect that `validate_output_attestation` is no longer called separately after polling
   - Ensure all existing tests pass with the updated `poll_output` and `run` signatures
