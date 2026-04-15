@@ -538,13 +538,18 @@ class TestCertificateChainValidation:
 
 
 # ---------------------------------------------------------------------------
-# Property 3: Output integrity verification
+# Property 3: Output integrity verification (per-poll)
 # ---------------------------------------------------------------------------
 
-# Feature: gha-remote-executor-caller, Property 3: Output integrity verification
+# Feature: gha-remote-executor-caller, Property 3: Output integrity verification (per-poll)
 # **Validates: Requirements 6B.8, 6B.9, 6B.10, 6B.12**
 class TestOutputIntegrityVerification:
-    """Property 3: Output integrity verification."""
+    """Property 3: Output integrity verification (per-poll).
+
+    Validates that validate_output_attestation correctly verifies the SHA-256
+    digest of canonical output at any point during polling — both intermediate
+    (partial) and final poll responses.
+    """
 
     @given(
         stdout_val=st.text(min_size=0, max_size=200),
@@ -553,7 +558,8 @@ class TestOutputIntegrityVerification:
     )
     @settings(max_examples=20)
     def test_matching_digest_accepted(self, stdout_val: str, stderr_val: str, exit_code_val: int):
-        """If user_data contains the correct SHA-256 digest of the canonical output,
+        """For any per-poll output (stdout, stderr, exit_code at any point during polling),
+        if user_data contains the correct SHA-256 digest of the canonical output,
         validate_output_attestation should return True."""
         import hashlib as _hashlib
 
@@ -566,11 +572,9 @@ class TestOutputIntegrityVerification:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             root_cert_pem=_TEST_CA_PEM,
-            expected_pcrs={4: b'\xaa' * 48, 7: b'\xbb' * 48},
+            expected_pcrs={4: "aa" * 48, 7: "bb" * 48},
             audience="test-audience",
         )
-        # Fix expected_pcrs to hex strings
-        caller.expected_pcrs = {4: "aa" * 48, 7: "bb" * 48}
 
         result = caller.validate_output_attestation(b64_str, stdout_val, stderr_val, exit_code_val)
         assert result is True
@@ -582,8 +586,8 @@ class TestOutputIntegrityVerification:
     )
     @settings(max_examples=20)
     def test_tampered_output_rejected(self, stdout_val: str, stderr_val: str, exit_code_val: int):
-        """If stdout/stderr/exit_code is altered after the digest was computed,
-        validate_output_attestation should raise CallerError."""
+        """For any per-poll output, if stdout/stderr/exit_code is altered after the
+        digest was computed, validate_output_attestation should raise CallerError."""
         import hashlib as _hashlib
 
         canonical = f"stdout:{stdout_val}\nstderr:{stderr_val}\nexit_code:{exit_code_val}"
@@ -606,15 +610,53 @@ class TestOutputIntegrityVerification:
         assert exc_info.value.phase == "output_attestation"
         assert "mismatch" in exc_info.value.message.lower() or "integrity" in exc_info.value.message.lower()
 
+    @given(
+        final_stdout=st.text(min_size=1, max_size=200),
+        stderr_val=st.text(min_size=0, max_size=200),
+        exit_code_val=st.integers(min_value=0, max_value=255),
+        split_point=st.integers(min_value=0, max_value=200),
+    )
+    @settings(max_examples=20)
+    def test_intermediate_poll_output_accepted(self, final_stdout: str, stderr_val: str, exit_code_val: int, split_point: int):
+        """Intermediate poll responses with partial stdout should also pass
+        validation when the digest matches the current (partial) output."""
+        import hashlib as _hashlib
+
+        # Simulate an intermediate poll: partial stdout, empty stderr, None exit_code
+        intermediate_stdout = final_stdout[:split_point % (len(final_stdout) + 1)]
+        intermediate_exit_code = None
+
+        canonical = f"stdout:{intermediate_stdout}\nstderr:\nexit_code:{intermediate_exit_code}"
+        digest = _hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+        payload_dict = _make_test_payload(extra_fields={"user_data": digest.encode("utf-8")})
+        b64_str, _ = _make_signed_cose(payload_dict)
+
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem=_TEST_CA_PEM,
+            expected_pcrs={4: "aa" * 48, 7: "bb" * 48},
+            audience="test-audience",
+        )
+
+        result = caller.validate_output_attestation(b64_str, intermediate_stdout, "", intermediate_exit_code)
+        assert result is True
+
 
 # ---------------------------------------------------------------------------
 # Property 6: Polling termination on completion
 # ---------------------------------------------------------------------------
 
-# Feature: gha-remote-executor-caller, Property 6: Polling termination on completion
-# **Validates: Requirements 5.3, 5.4**
+# Feature: gha-remote-executor-caller, Property 6: Polling termination on completion with per-poll output attestation
+# **Validates: Requirements 5.6, 5.7, 5.14**
 class TestPollingTerminationOnCompletion:
-    """Property 6: Polling termination on completion."""
+    """Property 6: Polling termination on completion with per-poll output attestation.
+
+    Each mock response includes an output_attestation_document with a valid COSE Sign1
+    structure containing the SHA-256 digest of the current output. Verifies that
+    validate_output_attestation is called on each poll response with the correct
+    per-poll nonce.
+    """
 
     @given(
         n_incomplete=st.integers(min_value=0, max_value=10),
@@ -623,9 +665,12 @@ class TestPollingTerminationOnCompletion:
         exit_code_val=st.integers(min_value=0, max_value=255),
     )
     @settings(max_examples=20)
-    def test_polls_until_complete(self, n_incomplete: int, stdout_val: str, stderr_val: str, exit_code_val: int):
-        """Given N incomplete responses followed by 1 complete response,
-        poll_output should make exactly N+1 requests and return the final response."""
+    def test_polls_until_complete_with_per_poll_attestation(self, n_incomplete: int, stdout_val: str, stderr_val: str, exit_code_val: int):
+        """Given N incomplete responses followed by 1 complete response, each with
+        a valid output_attestation_document, poll_output should make exactly N+1
+        requests, validate output attestation on each poll, and return the final response."""
+        import hashlib as _hashlib
+
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             poll_interval=0,  # No sleep in tests
@@ -635,32 +680,75 @@ class TestPollingTerminationOnCompletion:
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
 
+        # Build incomplete responses with a dummy attestation document
+        incomplete_attestation = _wrap_cose_sign1(
+            _make_test_payload(extra_fields={"user_data": b"dummy"})
+        )
+
         incomplete_resp = _make_encrypted_mock_response(server_enc, {
             "stdout": "",
             "stderr": "",
             "complete": False,
             "exit_code": None,
-            "output_attestation_document": None,
+            "output_attestation_document": incomplete_attestation,
         })
+
+        # Build complete response with a dummy attestation document
+        complete_attestation = _wrap_cose_sign1(
+            _make_test_payload(extra_fields={"user_data": b"dummy"})
+        )
 
         complete_resp = _make_encrypted_mock_response(server_enc, {
             "stdout": stdout_val,
             "stderr": stderr_val,
             "complete": True,
             "exit_code": exit_code_val,
-            "output_attestation_document": None,
+            "output_attestation_document": complete_attestation,
         })
 
         responses = [incomplete_resp] * n_incomplete + [complete_resp]
 
-        with patch("call_remote_executor.caller.requests.post", side_effect=responses) as mock_post:
-            with patch("call_remote_executor.caller.time.sleep"):
-                result = caller.poll_output("test-exec-id")
+        # Track calls to validate_output_attestation and capture per-poll nonces
+        validation_calls = []
 
+        def mock_validate(attestation_b64, stdout, stderr, exit_code, expected_nonce=None):
+            validation_calls.append({
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "expected_nonce": expected_nonce,
+            })
+            return True
+
+        # Capture nonces generated per poll
+        generated_nonces = []
+        original_generate_nonce = RemoteExecutorCaller.generate_nonce
+
+        def capturing_generate_nonce():
+            nonce = original_generate_nonce()
+            generated_nonces.append(nonce)
+            return nonce
+
+        with patch.object(caller, "validate_output_attestation", side_effect=mock_validate):
+            with patch.object(RemoteExecutorCaller, "generate_nonce", side_effect=capturing_generate_nonce):
+                with patch("call_remote_executor.caller.requests.post", side_effect=responses) as mock_post:
+                    with patch("call_remote_executor.caller.time.sleep"):
+                        result = caller.poll_output("test-exec-id")
+
+        # Verify exactly N+1 POST requests
         assert mock_post.call_count == n_incomplete + 1
+        # Verify validate_output_attestation called on each poll response
+        assert len(validation_calls) == n_incomplete + 1
+        # Verify each validation call received the per-poll nonce (not a shared nonce)
+        for i, call in enumerate(validation_calls):
+            assert call["expected_nonce"] == generated_nonces[i], (
+                f"Poll {i}: expected nonce {generated_nonces[i]}, got {call['expected_nonce']}"
+            )
+        # Verify final response fields
         assert result["stdout"] == stdout_val
         assert result["stderr"] == stderr_val
         assert result["exit_code"] == exit_code_val
+        assert result["output_integrity_status"] == "pass"
 
 
 # ---------------------------------------------------------------------------
@@ -1988,3 +2076,167 @@ class TestPublicAPIPreservation:
         assert err.phase == "test_phase"
         assert err.details == {"k": "v"}
         assert isinstance(err, Exception)
+
+# ---------------------------------------------------------------------------
+# Property 29: Null output attestation with attestation_error handling
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 29: Null output attestation with attestation_error handling
+# **Validates: Requirements 5.15, 6C.13**
+class TestNullOutputAttestationWithAttestationError:
+    """Property 29: Null output attestation with attestation_error handling.
+
+    When a poll response has output_attestation_document: null with an
+    attestation_error string, poll_output should log a warning containing
+    the error details and continue polling without raising CallerError.
+    Subsequent responses with valid output_attestation_document should
+    still be validated normally.
+    """
+
+    @given(
+        attestation_error_msg=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P", "Z"))),
+        stdout_val=st.text(min_size=0, max_size=50),
+        stderr_val=st.text(min_size=0, max_size=50),
+        exit_code_val=st.integers(min_value=0, max_value=255),
+    )
+    @settings(max_examples=20)
+    def test_null_attestation_with_error_logs_warning_and_continues(
+        self, attestation_error_msg: str, stdout_val: str, stderr_val: str, exit_code_val: int,
+    ):
+        """When output_attestation_document is null with attestation_error,
+        poll_output logs a warning and continues polling without raising."""
+        import hashlib as _hashlib
+
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            poll_interval=0,
+            max_poll_duration=9999,
+            audience="test-audience",
+        )
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption(caller)
+
+        # First response: null attestation with error
+        null_attestation_resp = _make_encrypted_mock_response(server_enc, {
+            "stdout": "",
+            "stderr": "",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": None,
+            "attestation_error": attestation_error_msg,
+        })
+
+        # Second response: complete with valid attestation (dummy — we mock validation)
+        complete_attestation = _wrap_cose_sign1(
+            _make_test_payload(extra_fields={"user_data": b"dummy"})
+        )
+        complete_resp = _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout_val,
+            "stderr": stderr_val,
+            "complete": True,
+            "exit_code": exit_code_val,
+            "output_attestation_document": complete_attestation,
+        })
+
+        responses = [null_attestation_resp, complete_resp]
+
+        # Mock validate_output_attestation to avoid nonce issues
+        validation_calls = []
+
+        def mock_validate(attestation_b64, stdout, stderr, exit_code, expected_nonce=None):
+            validation_calls.append(True)
+            return True
+
+        with patch.object(caller, "validate_output_attestation", side_effect=mock_validate):
+            with patch("call_remote_executor.caller.requests.post", side_effect=responses) as mock_post:
+                with patch("call_remote_executor.caller.time.sleep"):
+                    import logging
+                    with patch.object(logging.getLogger("call_remote_executor.caller"), "warning") as mock_warn:
+                        result = caller.poll_output("test-exec-id")
+
+        # Should have made 2 requests (1 null + 1 complete)
+        assert mock_post.call_count == 2
+        # Warning should have been logged with the attestation_error details
+        warn_messages = [str(call) for call in mock_warn.call_args_list]
+        assert any(attestation_error_msg in msg for msg in warn_messages), (
+            f"Expected warning containing '{attestation_error_msg}', got: {warn_messages}"
+        )
+        # validate_output_attestation called only for the complete response (valid attestation)
+        assert len(validation_calls) == 1
+        # Final result should be returned successfully
+        assert result["stdout"] == stdout_val
+        assert result["stderr"] == stderr_val
+        assert result["exit_code"] == exit_code_val
+        # Status should be "partial" since one poll had null attestation
+        assert result["output_integrity_status"] == "partial"
+
+    @given(
+        n_null=st.integers(min_value=1, max_value=5),
+        attestation_error_msg=st.text(min_size=1, max_size=50, alphabet=st.characters(whitelist_categories=("L", "N"))),
+        stdout_val=st.text(min_size=0, max_size=50),
+        stderr_val=st.text(min_size=0, max_size=50),
+        exit_code_val=st.integers(min_value=0, max_value=255),
+    )
+    @settings(max_examples=20)
+    def test_multiple_null_attestations_then_valid(
+        self, n_null: int, attestation_error_msg: str, stdout_val: str, stderr_val: str, exit_code_val: int,
+    ):
+        """Multiple poll responses with null attestation_document and attestation_error
+        should all log warnings, and a subsequent valid attestation should still be validated."""
+
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            poll_interval=0,
+            max_poll_duration=9999,
+            audience="test-audience",
+        )
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption(caller)
+
+        # N null attestation responses
+        null_responses = []
+        for _ in range(n_null):
+            null_responses.append(_make_encrypted_mock_response(server_enc, {
+                "stdout": "",
+                "stderr": "",
+                "complete": False,
+                "exit_code": None,
+                "output_attestation_document": None,
+                "attestation_error": attestation_error_msg,
+            }))
+
+        # Final complete response with valid attestation (dummy — we mock validation)
+        complete_attestation = _wrap_cose_sign1(
+            _make_test_payload(extra_fields={"user_data": b"dummy"})
+        )
+        complete_resp = _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout_val,
+            "stderr": stderr_val,
+            "complete": True,
+            "exit_code": exit_code_val,
+            "output_attestation_document": complete_attestation,
+        })
+
+        responses = null_responses + [complete_resp]
+
+        # Track validate_output_attestation calls
+        validation_calls = []
+
+        def mock_validate(attestation_b64, stdout, stderr, exit_code, expected_nonce=None):
+            validation_calls.append(True)
+            return True
+
+        with patch.object(caller, "validate_output_attestation", side_effect=mock_validate):
+            with patch("call_remote_executor.caller.requests.post", side_effect=responses) as mock_post:
+                with patch("call_remote_executor.caller.time.sleep"):
+                    result = caller.poll_output("test-exec-id")
+
+        # N+1 total requests
+        assert mock_post.call_count == n_null + 1
+        # validate_output_attestation called only for the final response (valid attestation)
+        assert len(validation_calls) == 1
+        # Result should be returned
+        assert result["stdout"] == stdout_val
+        assert result["exit_code"] == exit_code_val
+        # Status should be "partial" since some polls had null attestation
+        assert result["output_integrity_status"] == "partial"

@@ -966,8 +966,8 @@ Implement the client-side caller for the Remote Executor system: a Python script
   - Update existing tests that verify the `run()` flow to reflect that `validate_output_attestation` is no longer called separately after polling
   - Ensure all existing tests pass with the updated `poll_output` and `run` signatures
 
-- [ ] 56. Write property tests for per-poll output attestation
-  - [ ] 56.1 Update Property 3 test for per-poll output integrity verification
+- [x] 56. Write property tests for per-poll output attestation
+  - [x] 56.1 Update Property 3 test for per-poll output integrity verification
     - **Property 3: Output integrity verification (per-poll)**
     - Generate random stdout, stderr, exit_code representing current output at any point during polling (not just final)
     - Compute canonical output and SHA-256 digest, build COSE Sign1 attestation with that digest in user_data
@@ -975,14 +975,14 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Mutate one of stdout/stderr/exit_code and verify it raises `CallerError`
     - **Validates: Requirements 6B.8, 6B.9, 6B.10, 6B.12**
 
-  - [ ] 56.2 Update Property 6 test for per-poll output attestation validation
+  - [x] 56.2 Update Property 6 test for per-poll output attestation validation
     - **Property 6: Polling termination on completion with per-poll output attestation**
     - Generate random N (0-20), create a mock that returns encrypted `complete: false` N times then encrypted `complete: true`
     - Each mock response includes an `output_attestation_document` with a valid COSE Sign1 structure containing the SHA-256 digest of the current output
     - Verify exactly N+1 POST requests made, output attestation validated on each poll response (not just final), and final decrypted response fields extracted
     - **Validates: Requirements 5.6, 5.7, 5.14**
 
-  - [ ] 56.3 Write Property 29 test for null output attestation with attestation_error handling
+  - [x] 56.3 Write Property 29 test for null output attestation with attestation_error handling
     - **Property 29: Null output attestation with attestation_error handling**
     - Generate random poll response sequences where some responses have `output_attestation_document: null` with an `attestation_error` string
     - Verify `poll_output` logs a warning containing the `attestation_error` details and continues polling without raising `CallerError`
