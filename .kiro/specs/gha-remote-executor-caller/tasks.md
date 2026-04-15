@@ -989,33 +989,33 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify that subsequent poll responses with valid `output_attestation_document` are still validated normally
     - **Validates: Requirements 5.15, 6C.13**
 
-- [ ] 57. Write unit tests for per-poll output attestation
-  - [ ] 57.1 Write unit test for null `output_attestation_document` with `attestation_error` on non-complete poll
+- [x] 57. Write unit tests for per-poll output attestation
+  - [x] 57.1 Write unit test for null `output_attestation_document` with `attestation_error` on non-complete poll
     - Mock a poll response with `complete: false`, `output_attestation_document: null`, and `attestation_error: "TPM busy"` (or similar)
     - Verify `poll_output` logs a warning containing the `attestation_error` details and continues polling
     - _Requirements: 5.15, 6C.13_
 
-  - [ ] 57.2 Write unit test for null `output_attestation_document` without `attestation_error` on non-complete poll
+  - [x] 57.2 Write unit test for null `output_attestation_document` without `attestation_error` on non-complete poll
     - Mock a poll response with `complete: false`, `output_attestation_document: null`, and no `attestation_error` field
     - Verify `poll_output` logs a warning and continues polling
     - _Requirements: 6C.13_
 
-  - [ ] 57.3 Write unit test for output attestation validation on a running (non-complete) poll response
+  - [x] 57.3 Write unit test for output attestation validation on a running (non-complete) poll response
     - Mock a poll response with `complete: false` and a valid `output_attestation_document`
     - Verify `poll_output` calls `validate_output_attestation` with the current stdout, stderr, exit_code from that response
     - _Requirements: 5.6, 5.7_
 
-  - [ ] 57.4 Write unit test for output attestation nonce verification uses per-poll nonce
+  - [x] 57.4 Write unit test for output attestation nonce verification uses per-poll nonce
     - Mock multiple poll responses, each with a valid `output_attestation_document`
     - Verify that each call to `validate_output_attestation` receives the nonce generated for that specific poll request (not a shared or final nonce)
     - _Requirements: 5.14_
 
-  - [ ] 57.5 Update existing unit tests for `run()` flow to reflect per-poll attestation
+  - [x] 57.5 Update existing unit tests for `run()` flow to reflect per-poll attestation
     - Update tests that verify the `run()` method flow to confirm `validate_output_attestation` is no longer called separately after `poll_output`
     - Verify `run()` calls methods in correct order: health_check → request_oidc_token → attest → execute → poll_output → report results (no separate validate_output_attestation step)
     - _Requirements: 5.6, 5.7, 7.5_
 
-- [ ] 58. Final checkpoint - Ensure all per-poll output attestation tests pass
+- [x] 58. Final checkpoint - Ensure all per-poll output attestation tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

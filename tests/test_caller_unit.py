@@ -1820,6 +1820,201 @@ class TestEncryptedPollOutput:
 
 
 # ---------------------------------------------------------------------------
+# Tests for per-poll output attestation (Task 57)
+# ---------------------------------------------------------------------------
+
+
+class TestPerPollOutputAttestation:
+    """Unit tests for per-poll output attestation validation in poll_output.
+    Validates: Requirements 5.6, 5.7, 5.14, 5.15, 6C.13"""
+
+    def _setup_caller_with_encryption(self):
+        """Create a caller with encryption initialized (simulating attest())."""
+        caller = _make_caller()
+        caller._oidc_token = "test-oidc-token"
+        server_enc = _setup_encryption_for_caller(caller)
+        return caller, server_enc
+
+    def _make_encrypted_response(self, server_enc, payload_dict):
+        """Build a mock HTTP response with an encrypted response body."""
+        encrypted_resp = server_enc.encrypt_payload(payload_dict)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+        return mock_resp
+
+    # -- 57.1: null output_attestation_document with attestation_error on non-complete poll --
+
+    def test_null_attestation_with_error_logs_warning_and_continues(self):
+        """Null output_attestation_document with attestation_error logs warning and continues polling.
+        Validates: Requirements 5.15, 6C.13"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        incomplete_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "partial",
+            "stderr": "",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": None,
+            "attestation_error": "TPM busy",
+        })
+        complete_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "done",
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", side_effect=[incomplete_resp, complete_resp]):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with patch("call_remote_executor.caller.logger") as mock_logger:
+                    result = caller.poll_output("exec-1")
+
+        # Verify warning was logged containing the attestation_error details
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("TPM busy" in c for c in warning_calls), (
+            f"Expected warning containing 'TPM busy', got: {warning_calls}"
+        )
+        # Polling continued and completed
+        assert result["stdout"] == "done"
+        assert result["exit_code"] == 0
+
+    # -- 57.2: null output_attestation_document without attestation_error on non-complete poll --
+
+    def test_null_attestation_without_error_logs_warning_and_continues(self):
+        """Null output_attestation_document without attestation_error logs warning and continues.
+        Validates: Requirement 6C.13"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        incomplete_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "partial",
+            "stderr": "",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": None,
+        })
+        complete_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "done",
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", side_effect=[incomplete_resp, complete_resp]):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with patch("call_remote_executor.caller.logger") as mock_logger:
+                    result = caller.poll_output("exec-1")
+
+        # Verify a warning was logged about null attestation with no error
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("null" in c.lower() or "no attestation_error" in c.lower() for c in warning_calls), (
+            f"Expected warning about null attestation document, got: {warning_calls}"
+        )
+        # Polling continued and completed
+        assert result["stdout"] == "done"
+        assert result["exit_code"] == 0
+
+    # -- 57.3: output attestation validation on a running (non-complete) poll response --
+
+    def test_validates_output_attestation_on_non_complete_response(self):
+        """poll_output calls validate_output_attestation with current stdout, stderr, exit_code
+        on a non-complete response that has a valid output_attestation_document.
+        Validates: Requirements 5.6, 5.7"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        incomplete_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "running output",
+            "stderr": "some warning",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": "dGVzdC1hdHRlc3RhdGlvbg==",
+        })
+        complete_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "final output",
+            "stderr": "some warning",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": "ZmluYWwtYXR0ZXN0YXRpb24=",
+        })
+
+        with patch.object(caller, "validate_output_attestation", return_value=True) as mock_validate:
+            with patch("call_remote_executor.caller.requests.post", side_effect=[incomplete_resp, complete_resp]):
+                with patch("call_remote_executor.caller.time.sleep"):
+                    caller.poll_output("exec-1")
+
+        # validate_output_attestation should have been called for the non-complete response
+        assert mock_validate.call_count == 2
+        first_call = mock_validate.call_args_list[0]
+        assert first_call[0][0] == "dGVzdC1hdHRlc3RhdGlvbg=="  # attestation doc
+        assert first_call[0][1] == "running output"  # stdout
+        assert first_call[0][2] == "some warning"  # stderr
+        assert first_call[0][3] is None  # exit_code (not complete yet)
+
+    # -- 57.4: output attestation nonce verification uses per-poll nonce --
+
+    def test_per_poll_nonce_passed_to_validate_output_attestation(self):
+        """Each call to validate_output_attestation receives the nonce generated for that
+        specific poll request, not a shared or final nonce.
+        Validates: Requirement 5.14"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        # Two incomplete responses + one complete, all with attestation docs
+        resp1 = self._make_encrypted_response(server_enc, {
+            "stdout": "out1",
+            "stderr": "",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": "YXR0ZXN0MQ==",
+        })
+        resp2 = self._make_encrypted_response(server_enc, {
+            "stdout": "out2",
+            "stderr": "",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": "YXR0ZXN0Mg==",
+        })
+        resp3 = self._make_encrypted_response(server_enc, {
+            "stdout": "out3",
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": "YXR0ZXN0Mw==",
+        })
+
+        # Track the nonces generated for each poll request
+        generated_nonces = []
+        original_generate_nonce = RemoteExecutorCaller.generate_nonce
+
+        def tracking_generate_nonce():
+            nonce = original_generate_nonce()
+            generated_nonces.append(nonce)
+            return nonce
+
+        with patch.object(caller, "validate_output_attestation", return_value=True) as mock_validate:
+            with patch.object(RemoteExecutorCaller, "generate_nonce", side_effect=tracking_generate_nonce):
+                with patch("call_remote_executor.caller.requests.post", side_effect=[resp1, resp2, resp3]):
+                    with patch("call_remote_executor.caller.time.sleep"):
+                        caller.poll_output("exec-1")
+
+        # 3 nonces generated (one per poll request)
+        assert len(generated_nonces) == 3
+        # All nonces should be unique
+        assert len(set(generated_nonces)) == 3
+
+        # 3 calls to validate_output_attestation
+        assert mock_validate.call_count == 3
+
+        # Each call should have received the nonce for that specific poll
+        for i, call in enumerate(mock_validate.call_args_list):
+            assert call[1]["expected_nonce"] == generated_nonces[i], (
+                f"Call {i}: expected nonce {generated_nonces[i]}, "
+                f"got {call[1].get('expected_nonce')}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Tests for updated run orchestration flow (Task 28.2)
 # ---------------------------------------------------------------------------
 
