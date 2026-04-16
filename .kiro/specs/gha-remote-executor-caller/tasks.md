@@ -1102,8 +1102,8 @@ Implement the client-side caller for the Remote Executor system: a Python script
   - Update existing tests that construct `RemoteExecutorCaller` to include `attestation_output_dir` parameter where needed (set to None or a temp directory)
   - Ensure all existing tests pass with the updated signatures
 
-- [ ] 63. Write property tests for attestation artifact persistence
-  - [ ] 63.1 Write property test for attestation artifact collection completeness
+- [x] 63. Write property tests for attestation artifact persistence
+  - [x] 63.1 Write property test for attestation artifact collection completeness
     - **Property 30: Attestation artifact collection completeness**
     - Generate random execution sessions with varying numbers of output attestation poll responses (0 to 10)
     - For each session, save server identity, execution acceptance, and N output integrity attestations via `AttestationArtifactCollector`
@@ -1111,7 +1111,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify `manifest.json` contains N+2 entries with correct phase labels, filenames, nonces, and timestamps
     - **Validates: Requirements 18A.1, 18A.2, 18A.3, 18A.4, 18A.5, 18A2.7, 18B.12, 18B.13**
 
-  - [ ] 63.2 Write property test for attestation artifact round-trip
+  - [x] 63.2 Write property test for attestation artifact round-trip
     - **Property 31: Attestation artifact round-trip (save and reload)**
     - Generate random base64 strings (simulating attestation documents) and random JSON-serializable dicts (simulating payloads)
     - Save via `AttestationArtifactCollector`
@@ -1119,7 +1119,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Read back the `.payload.json` file and verify dict equality
     - **Validates: Requirements 18A.4, 18A2.11, 18B.15**
 
-  - [ ] 63.3 Write property test for attestation manifest structure validity
+  - [x] 63.3 Write property test for attestation manifest structure validity
     - **Property 32: Attestation manifest structure validity**
     - Generate random sets of 0 to 10 attestation documents with random phases
     - Write the manifest
@@ -1127,7 +1127,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify each `documents` entry has all required fields and valid phase values
     - **Validates: Requirements 18B.12, 18B.13, 18B.14, 18B.15, 18D.20, 18D.21**
 
-  - [ ] 63.4 Write property test for null output attestation skips artifact save
+  - [x] 63.4 Write property test for null output attestation skips artifact save
     - **Property 33: Null output attestation skips artifact save**
     - Generate random poll response sequences where some have null `output_attestation_document`
     - Verify that `AttestationArtifactCollector` does not create files for null attestation responses
