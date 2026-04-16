@@ -11,7 +11,30 @@ echo "Working directory: $(pwd)"
 EXECUTION_MARKER=$(cat /proc/sys/kernel/random/uuid)
 echo "MARKER:${EXECUTION_MARKER}"
 
+# --- Long output with sleeps for polling test ---
+PHASES=("INITIALIZING" "COMPILING" "LINKING" "OPTIMIZING" "PACKAGING" "VALIDATING" "FINALIZING")
+
+for phase in "${PHASES[@]}"; do
+    echo ""
+    echo "========================================"
+    echo "  PHASE: ${phase}"
+    echo "========================================"
+    for i in $(seq 1 15); do
+        echo "[${phase}] Step ${i}/15 - Processing module-${i}-$(cat /proc/sys/kernel/random/uuid | cut -c1-8)"
+        echo "[${phase}] Step ${i}/15 - Resolving dependencies for component-${i}"
+        echo "[${phase}] Step ${i}/15 - Verifying checksum: sha256-$(cat /proc/sys/kernel/random/uuid | tr -d '-')"
+        echo "[${phase}] Step ${i}/15 - Artifact registry lookup complete"
+        echo "[${phase}] Step ${i}/15 - Status: OK"
+    done
+    echo "[${phase}] Phase complete."
+    sleep 3
+done
+
 # --- Filesystem Isolation Test ---
+echo ""
+echo "========================================"
+echo "  ISOLATION TESTS"
+echo "========================================"
 ISOLATION_FILE="/tmp/isolation-test.txt"
 RANDOM_VALUE=$(cat /proc/sys/kernel/random/uuid)
 echo "$RANDOM_VALUE" > "$ISOLATION_FILE"
@@ -25,17 +48,13 @@ fi
 
 # --- Process Isolation Test ---
 PROC_NAME="isolation-probe-${EXECUTION_MARKER}"
-# Start a uniquely-named dummy background process
 bash -c "exec -a $PROC_NAME sleep 300" &
 DUMMY_PID=$!
 sleep 1
-# Count how many processes with this unique name are visible
-# Use /proc directly since ps may not be installed in the container
 PROC_COUNT=0
 for pid_dir in /proc/[0-9]*; do
     cmdline_file="${pid_dir}/cmdline"
     if [ -r "$cmdline_file" ] 2>/dev/null; then
-        # cmdline uses null bytes as separators; tr converts them for grep
         if tr '\0' ' ' < "$cmdline_file" 2>/dev/null | grep -qF "$PROC_NAME"; then
             PROC_COUNT=$((PROC_COUNT + 1))
         fi
@@ -46,8 +65,18 @@ if [ "$PROC_COUNT" -eq 1 ]; then
 else
     echo "ISOLATION_PROCESS:FAIL (visible=$PROC_COUNT)"
 fi
-# Cleanup dummy process
 kill "$DUMMY_PID" 2>/dev/null || true
 wait "$DUMMY_PID" 2>/dev/null || true
 
+# --- Final long tail output ---
+echo ""
+echo "========================================"
+echo "  POST-BUILD REPORT"
+echo "========================================"
+for i in $(seq 1 50); do
+    echo "Report line ${i}/50: artifact-${i} digest=$(cat /proc/sys/kernel/random/uuid) size=$((RANDOM % 9999 + 100))KB status=VERIFIED"
+done
+sleep 2
+
+echo ""
 echo "=== Build Complete ==="
