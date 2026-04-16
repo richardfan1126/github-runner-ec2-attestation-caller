@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--root-cert-pem", required=True, help="AWS NitroTPM attestation root CA certificate PEM string")
     parser.add_argument("--expected-pcrs", required=True, help="JSON string mapping PCR index to expected hex value")
     parser.add_argument("--audience", default="", help="Audience value for OIDC token request")
+    parser.add_argument("--attestation-output-dir", default="attestation-documents", help="Directory for saving attestation artifact files")
 
     args = parser.parse_args()
 
@@ -46,6 +47,7 @@ def main():
         root_cert_pem=args.root_cert_pem,
         expected_pcrs=expected_pcrs,
         audience=args.audience,
+        attestation_output_dir=args.attestation_output_dir,
     )
 
     try:

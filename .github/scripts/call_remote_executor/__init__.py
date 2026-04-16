@@ -8,6 +8,7 @@ validation, output polling, output integrity verification, and result reporting.
 from .errors import CallerError
 from .encryption import ClientEncryption
 from .attestation import EXPECTED_ATTESTATION_FIELDS
+from .artifact import AttestationArtifactCollector
 from .caller import RemoteExecutorCaller
 from .cli import main
 
@@ -15,6 +16,7 @@ __all__ = [
     "CallerError",
     "ClientEncryption",
     "RemoteExecutorCaller",
+    "AttestationArtifactCollector",
     "EXPECTED_ATTESTATION_FIELDS",
     "main",
 ]

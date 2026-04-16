@@ -1078,22 +1078,22 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Use a `try/finally` block to ensure manifest is written even on failure
     - _Requirements: 18B.14, 18C.16_
 
-- [ ] 61. Update CLI and workflow for attestation artifacts
-  - [ ] 61.1 Update `cli.py` to accept `--attestation-output-dir` argument
+- [x] 61. Update CLI and workflow for attestation artifacts
+  - [x] 61.1 Update `cli.py` to accept `--attestation-output-dir` argument
     - Add `--attestation-output-dir` optional argument to argparse with default value `attestation-documents`
     - Pass the value to `RemoteExecutorCaller.__init__` as `attestation_output_dir`
     - _Requirements: 18E.22, 18E.23_
 
-  - [ ] 61.2 Update `__init__.py` to re-export `AttestationArtifactCollector`
+  - [x] 61.2 Update `__init__.py` to re-export `AttestationArtifactCollector`
     - Add `AttestationArtifactCollector` to the imports and `__all__` in `__init__.py`
     - _Requirements: 1.11_
 
-  - [ ] 61.3 Update `.github/workflows/call-remote-executor.yml` for artifact upload (single execution)
+  - [x] 61.3 Update `.github/workflows/call-remote-executor.yml` for artifact upload (single execution)
     - Add `--attestation-output-dir attestation-documents` to the caller script invocation
     - Add an `actions/upload-artifact@v4` step after the caller script step with `if: always()`, `name: attestation-documents`, `path: attestation-documents/`, and `if-no-files-found: ignore`
     - _Requirements: 18C.16, 18C.17, 18C.19_
 
-  - [ ] 61.4 Update `.github/workflows/call-remote-executor.yml` for artifact upload (concurrent execution)
+  - [x] 61.4 Update `.github/workflows/call-remote-executor.yml` for artifact upload (concurrent execution)
     - In the matrix `execute` job, add `--attestation-output-dir attestation-documents` to the caller script invocation
     - Add an `actions/upload-artifact@v4` step with `if: always()`, `name: attestation-documents-${{ matrix.index }}`, `path: attestation-documents/`, and `if-no-files-found: ignore`
     - _Requirements: 18C.16, 18C.18, 18C.19_

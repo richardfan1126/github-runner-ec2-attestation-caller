@@ -100,7 +100,16 @@ jobs:
             --github-token "$GITHUB_TOKEN" \
             --root-cert-pem "$ROOT_CERT_PEM" \
             --expected-pcrs "$EXPECTED_PCRS" \
-            --audience "${{ inputs.audience }}"
+            --audience "${{ inputs.audience }}" \
+            --attestation-output-dir attestation-documents
+
+      - name: Upload attestation documents
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attestation-documents
+          path: attestation-documents/
+          if-no-files-found: ignore
 
   prepare-matrix:
     if: ${{ inputs.concurrency_count != '1' && inputs.concurrency_count != '' }}
@@ -155,7 +164,16 @@ jobs:
             --root-cert-pem "$ROOT_CERT_PEM" \
             --expected-pcrs "$EXPECTED_PCRS" \
             --audience "${{ inputs.audience }}" \
+            --attestation-output-dir attestation-documents \
             2>&1 | tee execution-output.txt
+
+      - name: Upload attestation documents
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attestation-documents-${{ matrix.index }}
+          path: attestation-documents/
+          if-no-files-found: ignore
 
       - name: Upload execution output
         uses: actions/upload-artifact@v4
