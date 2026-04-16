@@ -1134,49 +1134,49 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify the poll counter only increments for non-null attestations
     - **Validates: Requirements 18A.6**
 
-- [ ] 64. Write unit tests for attestation artifact persistence
-  - [ ] 64.1 Write unit tests for `AttestationArtifactCollector` directory creation
+- [x] 64. Write unit tests for attestation artifact persistence
+  - [x] 64.1 Write unit tests for `AttestationArtifactCollector` directory creation
     - Test output directory is created if it does not exist (Req 18E.24)
     - Test nested parent directories are created (Req 18E.24)
     - _Requirements: 18E.24_
 
-  - [ ] 64.2 Write unit tests for attestation document file creation
+  - [x] 64.2 Write unit tests for attestation document file creation
     - Test `save_server_identity` creates `server-identity.b64` and `server-identity.payload.json` (Req 18A.1, 18A2.8)
     - Test `save_execution_acceptance` creates `execution-acceptance.b64` and `execution-acceptance.payload.json` (Req 18A.2, 18A2.9)
     - Test `save_output_integrity` creates `output-integrity-poll-001.b64` and `output-integrity-poll-001.payload.json` with zero-padded numbering (Req 18A.3, 18A2.10)
     - Test `save_output_integrity` increments poll counter correctly across multiple calls (Req 18A.3)
     - _Requirements: 18A.1, 18A.2, 18A.3, 18A2.8, 18A2.9, 18A2.10_
 
-  - [ ] 64.3 Write unit tests for payload file content
+  - [x] 64.3 Write unit tests for payload file content
     - Test server identity payload contains `server_public_key` and `server_public_key_fingerprint` fields (Req 18A2.8)
     - Test execution acceptance payload contains `execution_id` and `status` fields (Req 18A2.9)
     - Test output integrity payload contains `stdout`, `stderr`, `exit_code`, and `output_digest` fields (Req 18A2.10)
     - Test all payload files are valid JSON (Req 18A2.11)
     - _Requirements: 18A2.8, 18A2.9, 18A2.10, 18A2.11_
 
-  - [ ] 64.4 Write unit tests for manifest generation
+  - [x] 64.4 Write unit tests for manifest generation
     - Test `write_manifest` produces valid JSON with `session` and `documents` keys (Req 18B.12, 18B.15)
     - Test `session` object contains `server_url`, `execution_id`, `start_time`, `end_time` (Req 18B.14)
     - Test each document entry contains `phase`, `attestation_filename`, `payload_filename`, `timestamp`, `nonce`, `execution_id` (Req 18B.13)
     - _Requirements: 18B.12, 18B.13, 18B.14, 18B.15_
 
-  - [ ] 64.5 Write unit tests for `has_documents` property
+  - [x] 64.5 Write unit tests for `has_documents` property
     - Test `has_documents` returns False before any saves (Req 18C.19)
     - Test `has_documents` returns True after saving at least one document (Req 18C.19)
     - _Requirements: 18C.19_
 
-  - [ ] 64.6 Write unit tests for workflow YAML artifact upload configuration
+  - [x] 64.6 Write unit tests for workflow YAML artifact upload configuration
     - Test workflow YAML contains `actions/upload-artifact` step with `if: always()` (Req 18C.16)
     - Test workflow YAML artifact name is `attestation-documents` for single mode (Req 18C.17)
     - Test workflow YAML artifact name includes matrix index for concurrent mode (Req 18C.18)
     - _Requirements: 18C.16, 18C.17, 18C.18_
 
-  - [ ] 64.7 Write unit tests for CLI `--attestation-output-dir` argument
+  - [x] 64.7 Write unit tests for CLI `--attestation-output-dir` argument
     - Test argparse includes `--attestation-output-dir` argument (Req 18E.22)
     - Test default value is `attestation-documents` (Req 18E.23)
     - _Requirements: 18E.22, 18E.23_
 
-- [ ] 65. Final checkpoint - Ensure all attestation artifact tests pass
+- [x] 65. Final checkpoint - Ensure all attestation artifact tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

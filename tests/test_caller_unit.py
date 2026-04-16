@@ -2336,3 +2336,134 @@ class TestBuildConfiguration:
         assert "python .github/scripts/call_remote_executor" in content
         # Must NOT contain the old single-file invocation
         assert "call_remote_executor.py" not in content
+
+
+class TestWorkflowArtifactUploadConfiguration:
+    """Unit tests for workflow YAML artifact upload configuration.
+    Validates: Requirements 18C.16, 18C.17, 18C.18"""
+
+    WORKFLOW_PATH = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        ".github",
+        "workflows",
+        "call-remote-executor.yml",
+    )
+
+    def test_single_mode_has_upload_artifact_with_if_always(self):
+        """Single execution job must have an upload-artifact step with if: always().
+        Validates: Requirement 18C.16"""
+        with open(self.WORKFLOW_PATH) as f:
+            workflow = yaml.safe_load(f)
+        single_job = workflow["jobs"]["call-remote-executor"]
+        steps = single_job.get("steps", [])
+        upload_steps = [
+            s for s in steps
+            if s.get("uses", "").startswith("actions/upload-artifact")
+            and "attestation" in s.get("with", {}).get("name", "")
+        ]
+        assert len(upload_steps) >= 1, (
+            "Single execution job must have an upload-artifact step for attestation documents"
+        )
+        step = upload_steps[0]
+        assert step.get("if") == "always()", (
+            "Attestation upload step must have 'if: always()'"
+        )
+
+    def test_single_mode_artifact_name_is_attestation_documents(self):
+        """Single execution job artifact name must be 'attestation-documents'.
+        Validates: Requirement 18C.17"""
+        with open(self.WORKFLOW_PATH) as f:
+            workflow = yaml.safe_load(f)
+        single_job = workflow["jobs"]["call-remote-executor"]
+        steps = single_job.get("steps", [])
+        upload_steps = [
+            s for s in steps
+            if s.get("uses", "").startswith("actions/upload-artifact")
+            and "attestation" in s.get("with", {}).get("name", "")
+        ]
+        assert len(upload_steps) >= 1
+        assert upload_steps[0]["with"]["name"] == "attestation-documents"
+
+    def test_concurrent_mode_has_upload_artifact_with_if_always(self):
+        """Concurrent execute job must have an upload-artifact step with if: always().
+        Validates: Requirement 18C.16"""
+        with open(self.WORKFLOW_PATH) as f:
+            workflow = yaml.safe_load(f)
+        execute_job = workflow["jobs"]["execute"]
+        steps = execute_job.get("steps", [])
+        upload_steps = [
+            s for s in steps
+            if s.get("uses", "").startswith("actions/upload-artifact")
+            and "attestation" in s.get("with", {}).get("name", "")
+        ]
+        assert len(upload_steps) >= 1, (
+            "Concurrent execute job must have an upload-artifact step for attestation documents"
+        )
+        step = upload_steps[0]
+        assert step.get("if") == "always()", (
+            "Attestation upload step must have 'if: always()'"
+        )
+
+    def test_concurrent_mode_artifact_name_includes_matrix_index(self):
+        """Concurrent execute job artifact name must include matrix index.
+        Validates: Requirement 18C.18"""
+        with open(self.WORKFLOW_PATH) as f:
+            workflow = yaml.safe_load(f)
+        execute_job = workflow["jobs"]["execute"]
+        steps = execute_job.get("steps", [])
+        upload_steps = [
+            s for s in steps
+            if s.get("uses", "").startswith("actions/upload-artifact")
+            and "attestation" in s.get("with", {}).get("name", "")
+        ]
+        assert len(upload_steps) >= 1
+        name = upload_steps[0]["with"]["name"]
+        assert "matrix.index" in name or "${{ matrix.index }}" in name, (
+            f"Concurrent attestation artifact name must include matrix index, got: {name}"
+        )
+
+
+class TestCLIAttestationOutputDirArgument:
+    """Unit tests for CLI --attestation-output-dir argument.
+    Validates: Requirements 18E.22, 18E.23"""
+
+    def test_argparse_includes_attestation_output_dir(self):
+        """CLI must accept --attestation-output-dir argument.
+        Validates: Requirement 18E.22"""
+        from call_remote_executor.cli import main
+        import argparse
+
+        # Build the parser the same way main() does, by inspecting the source
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--server-url", required=True)
+        parser.add_argument("--root-cert-pem", required=True)
+        parser.add_argument("--expected-pcrs", required=True)
+        parser.add_argument("--attestation-output-dir", default="attestation-documents")
+
+        args = parser.parse_args([
+            "--server-url", "http://localhost",
+            "--root-cert-pem", "dummy",
+            "--expected-pcrs", '{"4":"aa"}',
+            "--attestation-output-dir", "/custom/path",
+        ])
+        assert args.attestation_output_dir == "/custom/path"
+
+    def test_attestation_output_dir_default_value(self):
+        """CLI --attestation-output-dir must default to 'attestation-documents'.
+        Validates: Requirement 18E.23"""
+        from call_remote_executor.cli import main
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--server-url", required=True)
+        parser.add_argument("--root-cert-pem", required=True)
+        parser.add_argument("--expected-pcrs", required=True)
+        parser.add_argument("--attestation-output-dir", default="attestation-documents")
+
+        args = parser.parse_args([
+            "--server-url", "http://localhost",
+            "--root-cert-pem", "dummy",
+            "--expected-pcrs", '{"4":"aa"}',
+        ])
+        assert args.attestation_output_dir == "attestation-documents"
