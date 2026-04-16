@@ -1098,7 +1098,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Add an `actions/upload-artifact@v4` step with `if: always()`, `name: attestation-documents-${{ matrix.index }}`, `path: attestation-documents/`, and `if-no-files-found: ignore`
     - _Requirements: 18C.16, 18C.18, 18C.19_
 
-- [ ] 62. Checkpoint - Ensure attestation artifact implementation compiles and existing tests pass
+- [x] 62. Checkpoint - Ensure attestation artifact implementation compiles and existing tests pass
   - Update existing tests that construct `RemoteExecutorCaller` to include `attestation_output_dir` parameter where needed (set to None or a temp directory)
   - Ensure all existing tests pass with the updated signatures
 

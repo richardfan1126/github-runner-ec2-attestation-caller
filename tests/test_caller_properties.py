@@ -1996,6 +1996,7 @@ class TestPublicAPIPreservation:
             "CallerError",
             "ClientEncryption",
             "RemoteExecutorCaller",
+            "AttestationArtifactCollector",
             "EXPECTED_ATTESTATION_FIELDS",
             "main",
         }
@@ -2157,9 +2158,13 @@ class TestNullOutputAttestationWithAttestationError:
         # Should have made 2 requests (1 null + 1 complete)
         assert mock_post.call_count == 2
         # Warning should have been logged with the attestation_error details
-        warn_messages = [str(call) for call in mock_warn.call_args_list]
-        assert any(attestation_error_msg in msg for msg in warn_messages), (
-            f"Expected warning containing '{attestation_error_msg}', got: {warn_messages}"
+        assert mock_warn.call_count >= 1
+        warn_args = [call.args for call in mock_warn.call_args_list]
+        assert any(
+            len(args) >= 2 and attestation_error_msg == args[1]
+            for args in warn_args
+        ), (
+            f"Expected warning containing '{attestation_error_msg}', got args: {warn_args}"
         )
         # validate_output_attestation called only for the complete response (valid attestation)
         assert len(validation_calls) == 1

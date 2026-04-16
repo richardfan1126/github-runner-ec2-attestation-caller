@@ -777,7 +777,7 @@ class TestWorkflowValidation:
             workflow = yaml.safe_load(f)
         jobs = workflow.get("jobs", {})
 
-        # Execute job must have an upload-artifact step
+        # Execute job must have an upload-artifact step for execution output
         execute_steps = jobs["execute"].get("steps", [])
         upload_steps = [
             s for s in execute_steps
@@ -786,10 +786,13 @@ class TestWorkflowValidation:
         assert len(upload_steps) >= 1, (
             "execute job must have at least one upload-artifact step"
         )
-        # Verify the artifact name pattern includes the matrix index
-        upload_with = upload_steps[0].get("with", {})
-        assert "execution-output" in upload_with.get("name", ""), (
-            "upload-artifact step must use 'execution-output' in the artifact name"
+        # Find the execution-output upload step specifically
+        exec_output_uploads = [
+            s for s in upload_steps
+            if "execution-output" in s.get("with", {}).get("name", "")
+        ]
+        assert len(exec_output_uploads) >= 1, (
+            "execute job must have an upload-artifact step with 'execution-output' in the artifact name"
         )
 
         # verify-isolation job must have a download-artifact step
