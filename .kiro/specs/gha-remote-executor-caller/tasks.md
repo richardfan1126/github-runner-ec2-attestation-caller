@@ -1018,27 +1018,27 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 58. Final checkpoint - Ensure all per-poll output attestation tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 59. Implement AttestationArtifactCollector class
-  - [ ] 59.1 Create `.github/scripts/call_remote_executor/artifact.py` with `AttestationArtifactCollector` class
+- [x] 59. Implement AttestationArtifactCollector class
+  - [x] 59.1 Create `.github/scripts/call_remote_executor/artifact.py` with `AttestationArtifactCollector` class
     - Import `json`, `os`, `pathlib`, `datetime` and `CallerError` from `errors.py`
     - Implement `__init__(self, output_dir: str)` that creates the output directory (including parents) via `pathlib.Path.mkdir(parents=True, exist_ok=True)`
     - Initialize internal state: `self._documents = []` (manifest entries list), `self._output_poll_counter = 0`, `self._output_dir = Path(output_dir)`
     - Implement `has_documents` property returning `len(self._documents) > 0`
     - _Requirements: 18E.22, 18E.23, 18E.24_
 
-  - [ ] 59.2 Implement `save_server_identity` method
+  - [x] 59.2 Implement `save_server_identity` method
     - Write `attestation_b64` string to `server-identity.b64` in the output directory
     - Write JSON payload `{"server_public_key": server_public_key_b64, "server_public_key_fingerprint": server_public_key_fingerprint_hex}` to `server-identity.payload.json`
     - Append manifest entry with `phase="server-identity"`, `attestation_filename="server-identity.b64"`, `payload_filename="server-identity.payload.json"`, `timestamp` (current UTC ISO 8601), `nonce`, `execution_id=None`
     - _Requirements: 18A.1, 18A.4, 18A.5, 18A2.7, 18A2.8, 18A2.11_
 
-  - [ ] 59.3 Implement `save_execution_acceptance` method
+  - [x] 59.3 Implement `save_execution_acceptance` method
     - Write `attestation_b64` string to `execution-acceptance.b64` in the output directory
     - Write JSON payload `{"execution_id": execution_id, "status": status}` to `execution-acceptance.payload.json`
     - Append manifest entry with `phase="execution-acceptance"`, appropriate filenames, `timestamp`, `nonce`, `execution_id`
     - _Requirements: 18A.2, 18A.4, 18A.5, 18A2.7, 18A2.9, 18A2.11_
 
-  - [ ] 59.4 Implement `save_output_integrity` method
+  - [x] 59.4 Implement `save_output_integrity` method
     - Increment `self._output_poll_counter`
     - Format poll number as zero-padded 3-digit string (e.g., `001`, `002`)
     - Write `attestation_b64` string to `output-integrity-poll-NNN.b64`
@@ -1046,7 +1046,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Append manifest entry with `phase="output-integrity-poll-N"` (N is the unpadded poll number), appropriate filenames, `timestamp`, `nonce`, `execution_id`
     - _Requirements: 18A.3, 18A.4, 18A.5, 18A2.7, 18A2.10, 18A2.11, 18D.21_
 
-  - [ ] 59.5 Implement `write_manifest` method
+  - [x] 59.5 Implement `write_manifest` method
     - Build manifest dict with `session` object (`server_url`, `execution_id`, `start_time`, `end_time`) and `documents` array (from `self._documents`)
     - Write as formatted JSON (indent=2) to `manifest.json` in the output directory
     - _Requirements: 18B.12, 18B.13, 18B.14, 18B.15_
