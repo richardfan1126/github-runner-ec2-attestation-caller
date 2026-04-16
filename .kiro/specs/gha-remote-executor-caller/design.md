@@ -147,7 +147,7 @@ sequenceDiagram
   scripts/
     call_remote_executor/           # Python package (caller script)
       __init__.py                   # Re-exports: CallerError, ClientEncryption, RemoteExecutorCaller,
-                                    #              EXPECTED_ATTESTATION_FIELDS, main
+                                    #              AttestationArtifactCollector, EXPECTED_ATTESTATION_FIELDS, main
       __main__.py                   # Entry point: from .cli import main; main()
       errors.py                     # CallerError exception class
       encryption.py                 # ClientEncryption class (PQ_Hybrid_KEM client-side)
@@ -155,6 +155,8 @@ sequenceDiagram
                                     # validate_attestation(), verify_certificate_chain(),
                                     # verify_cose_signature(), validate_pcrs(), verify_nonce(),
                                     # validate_output_attestation()
+      artifact.py                   # AttestationArtifactCollector class (attestation document
+                                    # persistence, manifest generation)
       caller.py                     # RemoteExecutorCaller class (HTTP client, orchestration)
       cli.py                        # main() function, argparse setup
     verify_isolation.py             # Isolation verification script
@@ -178,6 +180,7 @@ Responsibilities:
 - Install Python dependencies from `.github/scripts/pyproject.toml`
 - When `concurrency_count == 1`: invoke the caller script directly in a single job (existing behavior)
 - When `concurrency_count > 1`: use a matrix strategy to dispatch N parallel `execute` jobs, followed by a `verify-isolation` job that collects and verifies all outputs
+- After the caller script completes (regardless of success or failure), upload the attestation output directory as a GitHub Actions artifact using `actions/upload-artifact`. Name the artifact `attestation-documents` for single execution mode, or `attestation-documents-{index}` for concurrent execution mode. Use `if: always()` to ensure upload even on failure, and `if-no-files-found: ignore` to skip gracefully if no documents were collected.
 
 #### Concurrent Execution Workflow Structure
 
@@ -230,6 +233,10 @@ Contains attestation validation as module-level functions (not instance methods)
 
 Imports `CallerError` from `errors.py`. External deps: `base64`, `hashlib`, `logging`, `cbor2`, `pycose`, `OpenSSL.crypto`, `Crypto.Util.number`, `cryptography.x509`.
 
+#### Module: `artifact.py`
+
+Contains `AttestationArtifactCollector` — responsible for saving attestation documents and their corresponding attested payloads to disk, and generating the JSON manifest. Imports `CallerError` from `errors.py`. External deps: `json`, `os`, `pathlib`, `datetime`.
+
 #### Module: `caller.py`
 
 Contains `RemoteExecutorCaller`. Imports from `errors.py`, `encryption.py`, and `attestation` module. Retains thin delegation methods that preserve the existing instance-method API:
@@ -246,13 +253,14 @@ External deps: `base64`, `json`, `logging`, `os`, `time`, `requests`.
 
 #### Module: `cli.py`
 
-Contains `main()` — argparse setup, env var reading, `RemoteExecutorCaller` construction, `run()` invocation, error handling, `GITHUB_STEP_SUMMARY` writing. Imports `CallerError` from `errors.py` and `RemoteExecutorCaller` from `caller.py`.
+Contains `main()` — argparse setup, env var reading, `RemoteExecutorCaller` construction, `run()` invocation, error handling, `GITHUB_STEP_SUMMARY` writing. Imports `CallerError` from `errors.py` and `RemoteExecutorCaller` from `caller.py`. Accepts `--attestation-output-dir` argument (optional, default `attestation-documents`) and passes it to `RemoteExecutorCaller.__init__`.
 
 #### Import Dependency Graph (call_remote_executor)
 
 ```
 cli.py → caller.py → attestation.py → errors.py
                     → encryption.py  → errors.py
+                    → artifact.py    → errors.py
        → errors.py
 ```
 
@@ -335,7 +343,8 @@ class RemoteExecutorCaller:
                  max_retries: int = 3,
                  root_cert_pem: str = "",
                  expected_pcrs: dict[int, str] | None = None,
-                 audience: str = ""):
+                 audience: str = "",
+                 attestation_output_dir: str | None = None):
         """
         Initialize caller with server URL and configuration.
         
@@ -346,6 +355,10 @@ class RemoteExecutorCaller:
                            Hardcoded in the workflow for PCR4 and PCR7.
             audience: Audience value for OIDC token request. Must match the
                       Remote Executor server's expected audience configuration.
+            attestation_output_dir: Optional directory path for saving attestation
+                                    documents and payloads as artifacts. When provided,
+                                    creates an AttestationArtifactCollector that persists
+                                    all attestation documents received during the session.
         """
 
     @staticmethod
@@ -509,7 +522,11 @@ class RemoteExecutorCaller:
         Orchestrate full flow:
         health_check → request_oidc_token → attest (get composite server public key, verify fingerprint, PQ_Hybrid_KEM key exchange)
         → execute (encrypted) → validate_attestation → poll_output (encrypted, with per-poll output attestation validation)
-        → report results.
+        → finalize attestation artifacts → report results.
+        
+        At each attestation point, saves the attestation document and its corresponding
+        attested payload via AttestationArtifactCollector (if attestation_output_dir is configured).
+        
         Output attestation validation (COSE Sign1 + PKI + PCR + nonce + digest comparison)
         is performed inside poll_output on each poll response that contains an
         output_attestation_document, not as a separate step after polling.
@@ -524,8 +541,91 @@ class CallerError(Exception):
         self.message = message
         self.phase = phase  # "health_check", "execute", "attestation", "polling",
                             # "output_attestation", "oidc", "attest", "encryption",
-                            # "key_exchange"
+                            # "key_exchange", "artifact"
         self.details = details or {}
+```
+
+```python
+class AttestationArtifactCollector:
+    """Collects attestation documents and their attested payloads during an execution
+    session, saves them to disk as files, and generates a JSON manifest.
+    
+    Each attestation document is saved as a .b64 file (raw base64 string as received
+    from the server). Each attested payload is saved as a .payload.json file containing
+    the data the attestation document cryptographically covers.
+    
+    File naming convention:
+    - server-identity.b64 / server-identity.payload.json
+    - execution-acceptance.b64 / execution-acceptance.payload.json
+    - output-integrity-poll-001.b64 / output-integrity-poll-001.payload.json
+    - output-integrity-poll-002.b64 / output-integrity-poll-002.payload.json
+    - manifest.json
+    """
+
+    def __init__(self, output_dir: str):
+        """
+        Initialize the collector with the output directory path.
+        Creates the directory (including parents) if it does not exist.
+        
+        Args:
+            output_dir: Path to the directory where attestation artifacts will be saved.
+        """
+
+    def save_server_identity(self, attestation_b64: str, nonce: str,
+                              server_public_key_b64: str,
+                              server_public_key_fingerprint_hex: str) -> None:
+        """
+        Save the server identity attestation document and its attested payload.
+        
+        Saves:
+        - server-identity.b64: The raw base64-encoded attestation document
+        - server-identity.payload.json: {server_public_key, server_public_key_fingerprint}
+        
+        Records the entry in the internal manifest list.
+        """
+
+    def save_execution_acceptance(self, attestation_b64: str, nonce: str,
+                                   execution_id: str, status: str) -> None:
+        """
+        Save the execution acceptance attestation document and its attested payload.
+        
+        Saves:
+        - execution-acceptance.b64: The raw base64-encoded attestation document
+        - execution-acceptance.payload.json: {execution_id, status}
+        
+        Records the entry in the internal manifest list.
+        """
+
+    def save_output_integrity(self, attestation_b64: str, nonce: str,
+                               execution_id: str,
+                               stdout: str, stderr: str, exit_code: int | None,
+                               output_digest: str) -> None:
+        """
+        Save an output integrity attestation document and its attested payload.
+        
+        Increments the internal poll counter and saves:
+        - output-integrity-poll-NNN.b64: The raw base64-encoded attestation document
+        - output-integrity-poll-NNN.payload.json: {stdout, stderr, exit_code, output_digest}
+        
+        NNN is zero-padded to 3 digits (e.g., 001, 002, ...).
+        Records the entry in the internal manifest list.
+        """
+
+    def write_manifest(self, server_url: str, execution_id: str | None,
+                        start_time: str, end_time: str) -> None:
+        """
+        Write the manifest.json file summarizing all saved attestation documents.
+        
+        The manifest contains:
+        - session: {server_url, execution_id, start_time, end_time}
+        - documents: [{phase, attestation_filename, payload_filename, timestamp, nonce, execution_id}, ...]
+        
+        All timestamps are ISO 8601 UTC format.
+        """
+
+    @property
+    def has_documents(self) -> bool:
+        """Return True if at least one attestation document has been saved."""
 ```
 
 ### 3. Sample Build Script (`scripts/sample-build.sh`)
@@ -1156,6 +1256,30 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 5.15, 6C.13**
 
+### Property 30: Attestation artifact collection completeness
+
+*For any* execution session that receives a server identity attestation (from `/attest`), an execution acceptance attestation (from `/execute`), and N output integrity attestations (from `/execution/{id}/output` poll responses with non-null `output_attestation_document`), the `AttestationArtifactCollector` should save exactly N+2 `.b64` files and N+2 `.payload.json` files, and the generated `manifest.json` should contain exactly N+2 entries with correct `phase`, `attestation_filename`, `payload_filename`, `nonce`, and `timestamp` fields.
+
+**Validates: Requirements 18A.1, 18A.2, 18A.3, 18A.4, 18A.5, 18A2.7, 18B.12, 18B.13**
+
+### Property 31: Attestation artifact round-trip (save and reload)
+
+*For any* base64-encoded attestation document string and corresponding attested payload dict, saving via `AttestationArtifactCollector` and then reading the saved `.b64` file should produce the exact same base64 string, and reading the saved `.payload.json` file should produce a dict equal to the original payload. This ensures no data corruption during persistence.
+
+**Validates: Requirements 18A.4, 18A2.11, 18B.15**
+
+### Property 32: Attestation manifest structure validity
+
+*For any* set of saved attestation documents (0 to N), the generated `manifest.json` should be valid JSON, contain a `session` object with `server_url`, `execution_id`, `start_time`, and `end_time` fields, and contain a `documents` array where each entry has `phase`, `attestation_filename`, `payload_filename`, `timestamp`, `nonce`, and `execution_id` fields. The `phase` values should be one of `server-identity`, `execution-acceptance`, or `output-integrity-poll-N` (where N is a positive integer).
+
+**Validates: Requirements 18B.12, 18B.13, 18B.14, 18B.15, 18D.20, 18D.21**
+
+### Property 33: Null output attestation skips artifact save
+
+*For any* poll response where `output_attestation_document` is null, the `AttestationArtifactCollector` should not create a `.b64` or `.payload.json` file for that poll response, and the poll counter for output integrity documents should not increment.
+
+**Validates: Requirements 18A.6**
+
 ## Error Handling
 
 ### Error Categories and Responses
@@ -1347,6 +1471,18 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 27. **Null output attestation with attestation_error handling**: Generate random poll response sequences where some responses have `output_attestation_document: null` with an `attestation_error` string. Verify `poll_output` logs a warning containing the `attestation_error` details and continues polling without raising. Verify that subsequent poll responses with valid `output_attestation_document` are still validated normally.
     `# Feature: gha-remote-executor-caller, Property 29: Null output attestation with attestation_error handling`
 
+28. **Attestation artifact collection completeness**: Generate random execution sessions with varying numbers of output attestation poll responses (0 to 10). For each session, save server identity, execution acceptance, and N output integrity attestations via `AttestationArtifactCollector`. Verify exactly N+2 `.b64` files and N+2 `.payload.json` files exist. Verify `manifest.json` contains N+2 entries with correct phase labels, filenames, nonces, and timestamps.
+    `# Feature: gha-remote-executor-caller, Property 30: Attestation artifact collection completeness`
+
+29. **Attestation artifact round-trip (save and reload)**: Generate random base64 strings (simulating attestation documents) and random JSON-serializable dicts (simulating payloads). Save via `AttestationArtifactCollector`. Read back the `.b64` file and verify exact string equality. Read back the `.payload.json` file and verify dict equality.
+    `# Feature: gha-remote-executor-caller, Property 31: Attestation artifact round-trip (save and reload)`
+
+30. **Attestation manifest structure validity**: Generate random sets of 0 to 10 attestation documents with random phases. Write the manifest. Parse the resulting JSON. Verify the `session` object has all required fields. Verify each `documents` entry has all required fields and valid phase values.
+    `# Feature: gha-remote-executor-caller, Property 32: Attestation manifest structure validity`
+
+31. **Null output attestation skips artifact save**: Generate random poll response sequences where some have null `output_attestation_document`. Verify that `AttestationArtifactCollector` does not create files for null attestation responses and that the poll counter only increments for non-null attestations.
+    `# Feature: gha-remote-executor-caller, Property 33: Null output attestation skips artifact save`
+
 **Unit tests** (specific examples and edge cases):
 
 - Empty `server_url` raises error (Req 1.5)
@@ -1411,4 +1547,18 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Workflow YAML invocation uses `python .github/scripts/call_remote_executor` without `.py` suffix (Req 1.9)
 - Root `pyproject.toml` references new package directory, not old file path (Req 1.14)
 - Full existing test suite passes after module split with no regressions (Req 1.13)
+- `AttestationArtifactCollector` creates output directory if it does not exist (Req 18E.24)
+- `AttestationArtifactCollector` creates nested parent directories (Req 18E.24)
+- `save_server_identity` creates `server-identity.b64` and `server-identity.payload.json` (Req 18A.1, 18A2.8)
+- `save_execution_acceptance` creates `execution-acceptance.b64` and `execution-acceptance.payload.json` (Req 18A.2, 18A2.9)
+- `save_output_integrity` creates `output-integrity-poll-001.b64` and `output-integrity-poll-001.payload.json` with zero-padded numbering (Req 18A.3, 18A2.10)
+- `save_output_integrity` increments poll counter correctly across multiple calls (Req 18A.3)
+- `write_manifest` produces valid JSON with `session` and `documents` keys (Req 18B.12, 18B.15)
+- `has_documents` returns False before any saves and True after (Req 18C.19)
+- Payload JSON files contain expected fields for each phase (Req 18A2.8, 18A2.9, 18A2.10)
+- Output integrity payload includes `output_digest` field (Req 18A2.10)
+- Workflow YAML contains `actions/upload-artifact` step with `if: always()` (Req 18C.16)
+- Workflow YAML artifact name is `attestation-documents` for single mode (Req 18C.17)
+- Workflow YAML artifact name includes matrix index for concurrent mode (Req 18C.18)
+- CLI argparse includes `--attestation-output-dir` argument with default `attestation-documents` (Req 18E.22, 18E.23)
 

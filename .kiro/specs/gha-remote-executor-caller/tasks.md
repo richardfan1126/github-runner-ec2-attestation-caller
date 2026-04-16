@@ -1018,6 +1018,167 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 58. Final checkpoint - Ensure all per-poll output attestation tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 59. Implement AttestationArtifactCollector class
+  - [ ] 59.1 Create `.github/scripts/call_remote_executor/artifact.py` with `AttestationArtifactCollector` class
+    - Import `json`, `os`, `pathlib`, `datetime` and `CallerError` from `errors.py`
+    - Implement `__init__(self, output_dir: str)` that creates the output directory (including parents) via `pathlib.Path.mkdir(parents=True, exist_ok=True)`
+    - Initialize internal state: `self._documents = []` (manifest entries list), `self._output_poll_counter = 0`, `self._output_dir = Path(output_dir)`
+    - Implement `has_documents` property returning `len(self._documents) > 0`
+    - _Requirements: 18E.22, 18E.23, 18E.24_
+
+  - [ ] 59.2 Implement `save_server_identity` method
+    - Write `attestation_b64` string to `server-identity.b64` in the output directory
+    - Write JSON payload `{"server_public_key": server_public_key_b64, "server_public_key_fingerprint": server_public_key_fingerprint_hex}` to `server-identity.payload.json`
+    - Append manifest entry with `phase="server-identity"`, `attestation_filename="server-identity.b64"`, `payload_filename="server-identity.payload.json"`, `timestamp` (current UTC ISO 8601), `nonce`, `execution_id=None`
+    - _Requirements: 18A.1, 18A.4, 18A.5, 18A2.7, 18A2.8, 18A2.11_
+
+  - [ ] 59.3 Implement `save_execution_acceptance` method
+    - Write `attestation_b64` string to `execution-acceptance.b64` in the output directory
+    - Write JSON payload `{"execution_id": execution_id, "status": status}` to `execution-acceptance.payload.json`
+    - Append manifest entry with `phase="execution-acceptance"`, appropriate filenames, `timestamp`, `nonce`, `execution_id`
+    - _Requirements: 18A.2, 18A.4, 18A.5, 18A2.7, 18A2.9, 18A2.11_
+
+  - [ ] 59.4 Implement `save_output_integrity` method
+    - Increment `self._output_poll_counter`
+    - Format poll number as zero-padded 3-digit string (e.g., `001`, `002`)
+    - Write `attestation_b64` string to `output-integrity-poll-NNN.b64`
+    - Write JSON payload `{"stdout": stdout, "stderr": stderr, "exit_code": exit_code, "output_digest": output_digest}` to `output-integrity-poll-NNN.payload.json`
+    - Append manifest entry with `phase="output-integrity-poll-N"` (N is the unpadded poll number), appropriate filenames, `timestamp`, `nonce`, `execution_id`
+    - _Requirements: 18A.3, 18A.4, 18A.5, 18A2.7, 18A2.10, 18A2.11, 18D.21_
+
+  - [ ] 59.5 Implement `write_manifest` method
+    - Build manifest dict with `session` object (`server_url`, `execution_id`, `start_time`, `end_time`) and `documents` array (from `self._documents`)
+    - Write as formatted JSON (indent=2) to `manifest.json` in the output directory
+    - _Requirements: 18B.12, 18B.13, 18B.14, 18B.15_
+
+- [ ] 60. Integrate AttestationArtifactCollector into RemoteExecutorCaller
+  - [ ] 60.1 Update `RemoteExecutorCaller.__init__` to accept `attestation_output_dir` parameter
+    - Add `attestation_output_dir: str | None = None` parameter
+    - When provided, create `self._artifact_collector = AttestationArtifactCollector(attestation_output_dir)`
+    - When None, set `self._artifact_collector = None`
+    - Import `AttestationArtifactCollector` from `artifact.py`
+    - _Requirements: 18E.22, 18E.23_
+
+  - [ ] 60.2 Update `attest` method to save server identity attestation artifact
+    - After successful attestation validation and fingerprint verification, if `self._artifact_collector` is not None, call `self._artifact_collector.save_server_identity()` with the attestation document base64 string, the nonce, the server public key base64 string, and the fingerprint hex string
+    - _Requirements: 18A.1, 18A2.8_
+
+  - [ ] 60.3 Update `execute` method to save execution acceptance attestation artifact
+    - After successful attestation validation of the `/execute` response, if `self._artifact_collector` is not None, call `self._artifact_collector.save_execution_acceptance()` with the attestation document base64 string, the nonce, the execution_id, and the status from the decrypted response
+    - _Requirements: 18A.2, 18A2.9_
+
+  - [ ] 60.4 Update `poll_output` method to save output integrity attestation artifacts
+    - After successful output attestation validation on each poll response, if `self._artifact_collector` is not None, call `self._artifact_collector.save_output_integrity()` with the attestation document base64 string, the nonce, the execution_id, the current stdout, stderr, exit_code, and the computed output digest
+    - When `output_attestation_document` is null, do NOT call `save_output_integrity` (Req 18A.6)
+    - _Requirements: 18A.3, 18A.6, 18A2.10_
+
+  - [ ] 60.5 Update `run` method to finalize attestation artifacts
+    - Record `start_time` (ISO 8601 UTC) at the beginning of `run()`
+    - After polling completes (regardless of success or failure), record `end_time` and call `self._artifact_collector.write_manifest()` with `server_url`, `execution_id`, `start_time`, `end_time`
+    - Use a `try/finally` block to ensure manifest is written even on failure
+    - _Requirements: 18B.14, 18C.16_
+
+- [ ] 61. Update CLI and workflow for attestation artifacts
+  - [ ] 61.1 Update `cli.py` to accept `--attestation-output-dir` argument
+    - Add `--attestation-output-dir` optional argument to argparse with default value `attestation-documents`
+    - Pass the value to `RemoteExecutorCaller.__init__` as `attestation_output_dir`
+    - _Requirements: 18E.22, 18E.23_
+
+  - [ ] 61.2 Update `__init__.py` to re-export `AttestationArtifactCollector`
+    - Add `AttestationArtifactCollector` to the imports and `__all__` in `__init__.py`
+    - _Requirements: 1.11_
+
+  - [ ] 61.3 Update `.github/workflows/call-remote-executor.yml` for artifact upload (single execution)
+    - Add `--attestation-output-dir attestation-documents` to the caller script invocation
+    - Add an `actions/upload-artifact@v4` step after the caller script step with `if: always()`, `name: attestation-documents`, `path: attestation-documents/`, and `if-no-files-found: ignore`
+    - _Requirements: 18C.16, 18C.17, 18C.19_
+
+  - [ ] 61.4 Update `.github/workflows/call-remote-executor.yml` for artifact upload (concurrent execution)
+    - In the matrix `execute` job, add `--attestation-output-dir attestation-documents` to the caller script invocation
+    - Add an `actions/upload-artifact@v4` step with `if: always()`, `name: attestation-documents-${{ matrix.index }}`, `path: attestation-documents/`, and `if-no-files-found: ignore`
+    - _Requirements: 18C.16, 18C.18, 18C.19_
+
+- [ ] 62. Checkpoint - Ensure attestation artifact implementation compiles and existing tests pass
+  - Update existing tests that construct `RemoteExecutorCaller` to include `attestation_output_dir` parameter where needed (set to None or a temp directory)
+  - Ensure all existing tests pass with the updated signatures
+
+- [ ] 63. Write property tests for attestation artifact persistence
+  - [ ] 63.1 Write property test for attestation artifact collection completeness
+    - **Property 30: Attestation artifact collection completeness**
+    - Generate random execution sessions with varying numbers of output attestation poll responses (0 to 10)
+    - For each session, save server identity, execution acceptance, and N output integrity attestations via `AttestationArtifactCollector`
+    - Verify exactly N+2 `.b64` files and N+2 `.payload.json` files exist in the output directory
+    - Verify `manifest.json` contains N+2 entries with correct phase labels, filenames, nonces, and timestamps
+    - **Validates: Requirements 18A.1, 18A.2, 18A.3, 18A.4, 18A.5, 18A2.7, 18B.12, 18B.13**
+
+  - [ ] 63.2 Write property test for attestation artifact round-trip
+    - **Property 31: Attestation artifact round-trip (save and reload)**
+    - Generate random base64 strings (simulating attestation documents) and random JSON-serializable dicts (simulating payloads)
+    - Save via `AttestationArtifactCollector`
+    - Read back the `.b64` file and verify exact string equality
+    - Read back the `.payload.json` file and verify dict equality
+    - **Validates: Requirements 18A.4, 18A2.11, 18B.15**
+
+  - [ ] 63.3 Write property test for attestation manifest structure validity
+    - **Property 32: Attestation manifest structure validity**
+    - Generate random sets of 0 to 10 attestation documents with random phases
+    - Write the manifest
+    - Parse the resulting JSON and verify the `session` object has all required fields
+    - Verify each `documents` entry has all required fields and valid phase values
+    - **Validates: Requirements 18B.12, 18B.13, 18B.14, 18B.15, 18D.20, 18D.21**
+
+  - [ ] 63.4 Write property test for null output attestation skips artifact save
+    - **Property 33: Null output attestation skips artifact save**
+    - Generate random poll response sequences where some have null `output_attestation_document`
+    - Verify that `AttestationArtifactCollector` does not create files for null attestation responses
+    - Verify the poll counter only increments for non-null attestations
+    - **Validates: Requirements 18A.6**
+
+- [ ] 64. Write unit tests for attestation artifact persistence
+  - [ ] 64.1 Write unit tests for `AttestationArtifactCollector` directory creation
+    - Test output directory is created if it does not exist (Req 18E.24)
+    - Test nested parent directories are created (Req 18E.24)
+    - _Requirements: 18E.24_
+
+  - [ ] 64.2 Write unit tests for attestation document file creation
+    - Test `save_server_identity` creates `server-identity.b64` and `server-identity.payload.json` (Req 18A.1, 18A2.8)
+    - Test `save_execution_acceptance` creates `execution-acceptance.b64` and `execution-acceptance.payload.json` (Req 18A.2, 18A2.9)
+    - Test `save_output_integrity` creates `output-integrity-poll-001.b64` and `output-integrity-poll-001.payload.json` with zero-padded numbering (Req 18A.3, 18A2.10)
+    - Test `save_output_integrity` increments poll counter correctly across multiple calls (Req 18A.3)
+    - _Requirements: 18A.1, 18A.2, 18A.3, 18A2.8, 18A2.9, 18A2.10_
+
+  - [ ] 64.3 Write unit tests for payload file content
+    - Test server identity payload contains `server_public_key` and `server_public_key_fingerprint` fields (Req 18A2.8)
+    - Test execution acceptance payload contains `execution_id` and `status` fields (Req 18A2.9)
+    - Test output integrity payload contains `stdout`, `stderr`, `exit_code`, and `output_digest` fields (Req 18A2.10)
+    - Test all payload files are valid JSON (Req 18A2.11)
+    - _Requirements: 18A2.8, 18A2.9, 18A2.10, 18A2.11_
+
+  - [ ] 64.4 Write unit tests for manifest generation
+    - Test `write_manifest` produces valid JSON with `session` and `documents` keys (Req 18B.12, 18B.15)
+    - Test `session` object contains `server_url`, `execution_id`, `start_time`, `end_time` (Req 18B.14)
+    - Test each document entry contains `phase`, `attestation_filename`, `payload_filename`, `timestamp`, `nonce`, `execution_id` (Req 18B.13)
+    - _Requirements: 18B.12, 18B.13, 18B.14, 18B.15_
+
+  - [ ] 64.5 Write unit tests for `has_documents` property
+    - Test `has_documents` returns False before any saves (Req 18C.19)
+    - Test `has_documents` returns True after saving at least one document (Req 18C.19)
+    - _Requirements: 18C.19_
+
+  - [ ] 64.6 Write unit tests for workflow YAML artifact upload configuration
+    - Test workflow YAML contains `actions/upload-artifact` step with `if: always()` (Req 18C.16)
+    - Test workflow YAML artifact name is `attestation-documents` for single mode (Req 18C.17)
+    - Test workflow YAML artifact name includes matrix index for concurrent mode (Req 18C.18)
+    - _Requirements: 18C.16, 18C.17, 18C.18_
+
+  - [ ] 64.7 Write unit tests for CLI `--attestation-output-dir` argument
+    - Test argparse includes `--attestation-output-dir` argument (Req 18E.22)
+    - Test default value is `attestation-documents` (Req 18E.23)
+    - _Requirements: 18E.22, 18E.23_
+
+- [ ] 65. Final checkpoint - Ensure all attestation artifact tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP
@@ -1034,3 +1195,4 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - Tasks 41-47 cover PQ_Hybrid_KEM migration from HPKE (Requirements 11A, 12.3, 13.1-13.7; Properties 17, 21, 26, 27)
 - Tasks 48-53 cover module split refactoring for call_remote_executor (Requirements 1.9-1.14; Property 28). The `verify_isolation.py` script remains as a single file.
 - Tasks 54-58 cover per-poll output attestation validation (Requirements 5.6, 5.7, 5.14, 5.15, 6A.1, 6B.8-6B.12, 6C.13; Properties 3, 6, 29). The `poll_output` method now validates output attestation on every poll response, and `run()` no longer calls `validate_output_attestation` separately.
+- Tasks 59-65 cover attestation document artifact persistence (Requirements 18A-18E; Properties 30-33). The `AttestationArtifactCollector` class saves attestation documents and their attested payloads to disk, generates a JSON manifest, and the workflow uploads them as GitHub Actions artifacts.

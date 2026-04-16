@@ -15,6 +15,7 @@ The caller includes:
 3. **Attestation Validation Logic**: Client-side logic to decode, cryptographically verify, and validate COSE Sign1-encoded NitroTPM attestation documents returned by the server, including certificate chain (PKI) validation, COSE signature verification, PCR value validation, and output integrity verification. Implemented as standalone functions in a dedicated `attestation` module.
 4. **PQ_Hybrid_KEM Encryption Logic**: Client-side X25519 key generation, ML-KEM-768 encapsulation (via `wolfcrypt-py`), ECDH key agreement, combined HKDF-SHA256 key derivation with `info=b"pq-hybrid-shared-key"`, and AES-256-GCM encryption/decryption for all request and response payloads on encrypted endpoints. Implemented as a dedicated `ClientEncryption` class in an `encryption` module.
 5. **Isolation Verification Logic**: Client-side logic to parse execution output markers and isolation test results, verify marker uniqueness across concurrent executions, and generate verification summaries. Implemented as a single-file Python script `.github/scripts/verify_isolation.py`.
+6. **Attestation Artifact Persistence**: Logic to save all attestation documents received during an execution session (server identity, execution acceptance, and output integrity attestations) as files with a JSON manifest, and upload them as GitHub Actions artifacts for post-workflow re-verification.
 
 The caller script is organized as a Python package (not a single file) under `.github/scripts/`, with `__init__.py` re-exports preserving backward-compatible import paths and a `__main__.py` module enabling direct package invocation. The isolation verification script remains a single file.
 
@@ -55,6 +56,10 @@ The caller script is organized as a Python package (not a single file) under `.g
 - **Isolation_Verification**: The process of verifying that each concurrent execution's output passes its own filesystem and process isolation tests (`ISOLATION_FILE:PASS`, `ISOLATION_PROCESS:PASS`), contains exactly one `MARKER:<value>` line, and that each execution's marker is unique across all concurrent executions
 - **Isolation_Test_File_Path**: A well-known file path (`/tmp/isolation-test.txt`) used by the Sample_Build_Script to test filesystem isolation between concurrent executions
 - **Isolation_Test_Result**: A parseable line in the script stdout output reporting the result of an isolation test, formatted as `ISOLATION_<TEST_NAME>:<PASS|FAIL>` (e.g., `ISOLATION_FILE:PASS`, `ISOLATION_PROCESS:PASS`)
+- **Attestation_Artifact**: A GitHub Actions artifact containing one or more saved Attestation_Documents from a single execution session, organized in a directory structure that identifies the attestation phase and sequence, enabling post-workflow re-verification of the execution's cryptographic provenance
+- **Attestation_Phase**: A label identifying which point in the execution lifecycle an Attestation_Document was received: `server-identity` (from GET /attest), `execution-acceptance` (from POST /execute), or `output-integrity-poll-N` (from the Nth POST /execution/{id}/output response that contained an attestation document)
+- **Attestation_Bundle**: The complete set of Attestation_Artifacts uploaded for a single execution session, containing all attestation documents and their corresponding attested payloads received during that session, along with a manifest file describing each document's phase, timestamp, associated nonce, and payload file reference
+- **Attested_Payload**: The data that an Attestation_Document cryptographically covers — for `server-identity` this is the composite Server_Public_Key and its fingerprint, for `execution-acceptance` this is the execution response (execution_id, status), and for `output-integrity-poll-N` this is the canonical Script_Output (stdout, stderr, exit_code) at that point in time along with its SHA-256 digest
 
 ## Requirements
 
@@ -403,3 +408,51 @@ The caller script is organized as a Python package (not a single file) under `.g
 19. WHEN all concurrent executions succeed and isolation verification passes, THE Caller_Workflow SHALL mark the workflow as successful
 20. IF any concurrent execution fails (non-zero exit code, attestation failure, or timeout), THEN THE Caller_Workflow SHALL mark the workflow as failed and report which execution failed
 
+
+### Requirement 18: Attestation Document Artifact Persistence
+
+**User Story:** As a security engineer, I want all attestation documents received during an execution saved as GitHub Actions artifacts, so that I can download and re-verify the cryptographic provenance of any workflow run after it completes.
+
+#### Acceptance Criteria
+
+##### 18A: Attestation Document Collection
+
+1. THE Caller_Script SHALL save the Attestation_Document received from the GET `/attest` response to a local file labeled with Attestation_Phase `server-identity`
+2. THE Caller_Script SHALL save the Attestation_Document received from the decrypted POST `/execute` response to a local file labeled with Attestation_Phase `execution-acceptance`
+3. THE Caller_Script SHALL save each Output_Attestation_Document received from decrypted POST `/execution/{id}/output` poll responses to a local file labeled with Attestation_Phase `output-integrity-poll-N`, where N is the sequential poll number (starting from 1) among poll responses that contained a non-null attestation document
+4. THE Caller_Script SHALL store each saved attestation document as the raw base64-encoded string (the same format received from the server) to preserve the original document for independent re-verification
+5. THE Caller_Script SHALL organize saved attestation documents in a directory structure under a configurable base path, with each file named to reflect its Attestation_Phase (e.g., `server-identity.b64`, `execution-acceptance.b64`, `output-integrity-poll-001.b64`)
+6. WHEN a poll response contains `output_attestation_document` set to null, THE Caller_Script SHALL NOT create a file for that poll response
+
+##### 18A2: Attested Payload Persistence
+
+7. THE Caller_Script SHALL save the corresponding attested payload alongside each saved attestation document, so that a verifier can independently re-verify the attestation against the data it covers
+8. THE Caller_Script SHALL save the composite Server_Public_Key (raw base64-encoded bytes as received from the `/attest` response `server_public_key` field) alongside the `server-identity` attestation document as `server-identity.payload.json`, containing the fields `server_public_key` (base64 string) and `server_public_key_fingerprint` (hex-encoded SHA-256 fingerprint extracted from the attestation document's `public_key` field)
+9. THE Caller_Script SHALL save the decrypted `/execute` response payload alongside the `execution-acceptance` attestation document as `execution-acceptance.payload.json`, containing the fields `execution_id` and `status` from the decrypted response
+10. THE Caller_Script SHALL save the canonical Script_Output at the time of each output attestation poll alongside the corresponding `output-integrity-poll-N` attestation document as `output-integrity-poll-NNN.payload.json`, containing the fields `stdout`, `stderr`, `exit_code` (the values at that point in time), and `output_digest` (the SHA-256 hex digest of the canonical output format `stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}` that was verified against the attestation document's `user_data` field)
+11. THE Caller_Script SHALL store each payload file as valid JSON to enable programmatic re-verification
+
+##### 18B: Attestation Manifest
+
+12. THE Caller_Script SHALL generate a JSON manifest file (`manifest.json`) in the attestation output directory summarizing all saved attestation documents and their corresponding payloads
+13. THE manifest file SHALL contain an array of entries, each with the fields: `phase` (Attestation_Phase label), `attestation_filename` (the saved `.b64` file name), `payload_filename` (the saved `.payload.json` file name), `timestamp` (ISO 8601 UTC timestamp of when the document was received), `nonce` (the nonce sent in the corresponding request), and `execution_id` (the Execution_ID, included for execution-acceptance and output-integrity phases)
+14. THE manifest file SHALL include a top-level `session` object containing the `server_url`, `execution_id`, `start_time` (ISO 8601 UTC), and `end_time` (ISO 8601 UTC) of the execution session
+15. THE manifest file SHALL be valid JSON and parseable by standard JSON tools
+
+##### 18C: GitHub Actions Artifact Upload
+
+16. THE Caller_Workflow SHALL upload the attestation output directory as a GitHub Actions artifact after the Caller_Script completes (regardless of execution success or failure)
+17. THE Caller_Workflow SHALL name the uploaded artifact `attestation-documents` for single execution mode (concurrency_count == 1)
+18. WHEN running in concurrent execution mode (concurrency_count > 1), THE Caller_Workflow SHALL name each execution's uploaded artifact `attestation-documents-{index}` where `{index}` is the matrix job index, so that attestation documents from different executions are distinguishable
+19. IF the Caller_Script fails before collecting any attestation documents, THEN THE Caller_Workflow SHALL skip the artifact upload step without failing the workflow
+
+##### 18D: Attestation Phase Identification
+
+20. THE saved attestation document file names and manifest entries SHALL clearly identify which part of the execution lifecycle each document attests: server identity verification (from `/attest`), execution acceptance (from `/execute`), or output integrity at a specific poll sequence (from `/execution/{id}/output`)
+21. THE manifest entry for each `output-integrity-poll-N` document SHALL include the poll sequence number so that the user can correlate the attestation with a specific point in the output polling timeline
+
+##### 18E: CLI Configuration
+
+22. THE Caller_Script SHALL accept an optional `--attestation-output-dir` CLI argument specifying the base directory for saving attestation documents
+23. WHEN `--attestation-output-dir` is not provided, THE Caller_Script SHALL default to a directory named `attestation-documents` in the current working directory
+24. IF the specified attestation output directory does not exist, THEN THE Caller_Script SHALL create the directory (including parent directories) before saving any attestation documents
