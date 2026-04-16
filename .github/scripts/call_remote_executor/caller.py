@@ -1,6 +1,8 @@
 """RemoteExecutorCaller HTTP client for the Remote Executor server."""
 
 import base64
+import datetime
+import hashlib
 import json
 import logging
 import os
@@ -10,6 +12,7 @@ import requests
 
 from .errors import CallerError
 from .encryption import ClientEncryption
+from .artifact import AttestationArtifactCollector
 from . import attestation
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,7 @@ class RemoteExecutorCaller:
         root_cert_pem: str = "",
         expected_pcrs: dict[int, str] | None = None,
         audience: str = "",
+        attestation_output_dir: str | None = None,
     ):
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
@@ -38,6 +42,11 @@ class RemoteExecutorCaller:
         self.expected_pcrs = expected_pcrs
         self.audience = audience
         self._oidc_token: str | None = None
+        self._artifact_collector: AttestationArtifactCollector | None = (
+            AttestationArtifactCollector(attestation_output_dir)
+            if attestation_output_dir is not None
+            else None
+        )
 
     @staticmethod
     def generate_nonce() -> str:
@@ -275,6 +284,16 @@ class RemoteExecutorCaller:
         # Store nonce for later reference
         self._attest_nonce = nonce
 
+        # Save server identity attestation artifact
+        if self._artifact_collector is not None:
+            fingerprint_hex = hashlib.sha256(composite_key_bytes).hexdigest()
+            self._artifact_collector.save_server_identity(
+                attestation_b64=attestation_b64,
+                nonce=nonce,
+                server_public_key_b64=server_public_key_b64,
+                server_public_key_fingerprint_hex=fingerprint_hex,
+            )
+
         logger.info("Server attestation validated, PQ_Hybrid_KEM key exchange complete")
         return composite_key_bytes
 
@@ -367,6 +386,15 @@ class RemoteExecutorCaller:
         attestation_b64 = decrypted.get("attestation_document", "")
         if attestation_b64:
             self.validate_attestation(attestation_b64, expected_nonce=nonce)
+
+            # Save execution acceptance attestation artifact
+            if self._artifact_collector is not None:
+                self._artifact_collector.save_execution_acceptance(
+                    attestation_b64=attestation_b64,
+                    nonce=nonce,
+                    execution_id=decrypted.get("execution_id", ""),
+                    status=decrypted.get("status", ""),
+                )
 
         return decrypted
 
@@ -488,6 +516,20 @@ class RemoteExecutorCaller:
                     output_attestation_b64, stdout, stderr, exit_code,
                     expected_nonce=nonce,
                 )
+
+                # Save output integrity attestation artifact
+                if self._artifact_collector is not None:
+                    canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
+                    output_digest = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+                    self._artifact_collector.save_output_integrity(
+                        attestation_b64=output_attestation_b64,
+                        nonce=nonce,
+                        execution_id=execution_id,
+                        stdout=stdout,
+                        stderr=stderr,
+                        exit_code=exit_code,
+                        output_digest=output_digest,
+                    )
             else:
                 attestation_error = data.get("attestation_error")
                 if attestation_error:
@@ -560,42 +602,56 @@ class RemoteExecutorCaller:
         -> report results.
         Returns remote script exit code.
         """
-        # Health check
-        logger.info("Checking server health...")
-        self.health_check()
-        logger.info("Server is healthy")
+        execution_id = None
+        start_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        # Acquire OIDC token
-        logger.info("Requesting OIDC token...")
-        self.request_oidc_token()
-        logger.info("OIDC token acquired")
+        try:
+            # Health check
+            logger.info("Checking server health...")
+            self.health_check()
+            logger.info("Server is healthy")
 
-        # Attest: get server public key and establish HPKE shared key
-        logger.info("Attesting server identity and establishing encrypted channel...")
-        self.attest()
-        logger.info("Server attestation validated, HPKE key exchange complete")
+            # Acquire OIDC token
+            logger.info("Requesting OIDC token...")
+            self.request_oidc_token()
+            logger.info("OIDC token acquired")
 
-        # Execute (encrypted) — attestation validation with nonce is done inside execute()
-        logger.info("Submitting encrypted execution request...")
-        exec_response = self.execute(repository_url, commit_hash, script_path, github_token)
-        execution_id = exec_response["execution_id"]
-        attestation_status = "pass"
-        logger.info("Execution submitted: %s", execution_id)
+            # Attest: get server public key and establish HPKE shared key
+            logger.info("Attesting server identity and establishing encrypted channel...")
+            self.attest()
+            logger.info("Server attestation validated, HPKE key exchange complete")
 
-        # Poll for output (encrypted, with per-poll output attestation validation)
-        logger.info("Polling for execution output...")
-        output = self.poll_output(execution_id)
-        stdout = output["stdout"]
-        stderr = output["stderr"]
-        exit_code = output["exit_code"]
-        output_integrity_status = output["output_integrity_status"]
+            # Execute (encrypted) — attestation validation with nonce is done inside execute()
+            logger.info("Submitting encrypted execution request...")
+            exec_response = self.execute(repository_url, commit_hash, script_path, github_token)
+            execution_id = exec_response["execution_id"]
+            attestation_status = "pass"
+            logger.info("Execution submitted: %s", execution_id)
 
-        logger.info("exit_code: %s", exit_code)
-        logger.info("Output integrity: %s", output_integrity_status)
+            # Poll for output (encrypted, with per-poll output attestation validation)
+            logger.info("Polling for execution output...")
+            output = self.poll_output(execution_id)
+            stdout = output["stdout"]
+            stderr = output["stderr"]
+            exit_code = output["exit_code"]
+            output_integrity_status = output["output_integrity_status"]
 
-        # Generate summary
-        self.summary = self._generate_summary(
-            stdout, stderr, exit_code, attestation_status, output_integrity_status,
-        )
+            logger.info("exit_code: %s", exit_code)
+            logger.info("Output integrity: %s", output_integrity_status)
 
-        return exit_code
+            # Generate summary
+            self.summary = self._generate_summary(
+                stdout, stderr, exit_code, attestation_status, output_integrity_status,
+            )
+
+            return exit_code
+        finally:
+            # Write attestation artifact manifest regardless of success or failure
+            if self._artifact_collector is not None:
+                end_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                self._artifact_collector.write_manifest(
+                    server_url=self.server_url,
+                    execution_id=execution_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                )

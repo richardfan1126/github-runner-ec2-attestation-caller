@@ -1051,28 +1051,28 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Write as formatted JSON (indent=2) to `manifest.json` in the output directory
     - _Requirements: 18B.12, 18B.13, 18B.14, 18B.15_
 
-- [ ] 60. Integrate AttestationArtifactCollector into RemoteExecutorCaller
-  - [ ] 60.1 Update `RemoteExecutorCaller.__init__` to accept `attestation_output_dir` parameter
+- [x] 60. Integrate AttestationArtifactCollector into RemoteExecutorCaller
+  - [x] 60.1 Update `RemoteExecutorCaller.__init__` to accept `attestation_output_dir` parameter
     - Add `attestation_output_dir: str | None = None` parameter
     - When provided, create `self._artifact_collector = AttestationArtifactCollector(attestation_output_dir)`
     - When None, set `self._artifact_collector = None`
     - Import `AttestationArtifactCollector` from `artifact.py`
     - _Requirements: 18E.22, 18E.23_
 
-  - [ ] 60.2 Update `attest` method to save server identity attestation artifact
+  - [x] 60.2 Update `attest` method to save server identity attestation artifact
     - After successful attestation validation and fingerprint verification, if `self._artifact_collector` is not None, call `self._artifact_collector.save_server_identity()` with the attestation document base64 string, the nonce, the server public key base64 string, and the fingerprint hex string
     - _Requirements: 18A.1, 18A2.8_
 
-  - [ ] 60.3 Update `execute` method to save execution acceptance attestation artifact
+  - [x] 60.3 Update `execute` method to save execution acceptance attestation artifact
     - After successful attestation validation of the `/execute` response, if `self._artifact_collector` is not None, call `self._artifact_collector.save_execution_acceptance()` with the attestation document base64 string, the nonce, the execution_id, and the status from the decrypted response
     - _Requirements: 18A.2, 18A2.9_
 
-  - [ ] 60.4 Update `poll_output` method to save output integrity attestation artifacts
+  - [x] 60.4 Update `poll_output` method to save output integrity attestation artifacts
     - After successful output attestation validation on each poll response, if `self._artifact_collector` is not None, call `self._artifact_collector.save_output_integrity()` with the attestation document base64 string, the nonce, the execution_id, the current stdout, stderr, exit_code, and the computed output digest
     - When `output_attestation_document` is null, do NOT call `save_output_integrity` (Req 18A.6)
     - _Requirements: 18A.3, 18A.6, 18A2.10_
 
-  - [ ] 60.5 Update `run` method to finalize attestation artifacts
+  - [x] 60.5 Update `run` method to finalize attestation artifacts
     - Record `start_time` (ISO 8601 UTC) at the beginning of `run()`
     - After polling completes (regardless of success or failure), record `end_time` and call `self._artifact_collector.write_manifest()` with `server_url`, `execution_id`, `start_time`, `end_time`
     - Use a `try/finally` block to ensure manifest is written even on failure
