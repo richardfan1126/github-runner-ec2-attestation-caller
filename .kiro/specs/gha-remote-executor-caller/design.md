@@ -6,7 +6,9 @@ The GitHub Actions Remote Executor Caller is the client-side counterpart to the 
 
 The caller communicates with the Remote Executor server using PQ_Hybrid_KEM-based encryption for all sensitive endpoints (`/execute` and `/execution/{id}/output`). It first obtains the server's composite public key (X25519 + ML-KEM-768 encapsulation key) via the unauthenticated `/attest` endpoint (which also returns a NitroTPM attestation document for server identity verification). The composite key is returned as a separate field in the `/attest` JSON response because it exceeds the 1024-byte attestation document `public_key` field limit — the attestation document instead contains a SHA-256 fingerprint of the composite key, which the caller verifies. The caller then generates a client-side X25519 keypair, performs ML-KEM-768 encapsulation against the server's encapsulation key, and derives a shared AES-256-GCM key by combining both the X25519 ECDH shared secret and the ML-KEM-768 shared secret via HKDF-SHA256 with `info=b"pq-hybrid-shared-key"`. All request payloads (including the OIDC token) are encrypted before transmission. The OIDC token is transmitted exclusively within the encrypted payload — no `Authorization` header is used on any request.
 
-The caller validates the server's NitroTPM attestation documents at three points: (1) when the server's composite public key is retrieved via `/attest` (including fingerprint verification), (2) when the execution request is accepted via `/execute`, and (3) on every poll response from `/execution/{id}/output` that contains an `output_attestation_document` (not just on completion). Each request includes a unique random nonce that is verified in the returned attestation document to ensure freshness and prevent replay attacks. When the server fails to generate an output attestation document for a poll response, it returns `output_attestation_document: null` with an `attestation_error` field; the caller logs a warning and continues polling without failing.
+The caller validates the server's NitroTPM attestation documents at three points: (1) when the server's composite public key is retrieved via `/attest` (including fingerprint verification), (2) when the execution request is accepted via `/execute`, and (3) on every poll response from `/execution/{id}/output` that contains an `output_attestation_document` (not just on completion). Each request includes a unique random nonce that is verified in the returned attestation document to ensure freshness and prevent replay attacks. When the server fails to generate an output attestation document for a poll response, it returns `output_attestation_document: null` with an `attestation_error` field; the caller logs a warning and continues polling without failing. When a poll response indicates the output was truncated (`truncated: true`), the caller logs a warning and records the truncation status for inclusion in the workflow summary.
+
+The caller handles server-side rate limiting (HTTP 429 Too Many Requests) on `/health`, `/attest`, and `/execute` endpoints by retrying with exponential backoff up to a configurable number of retries. It also handles specific error responses from `/execute`: HTTP 413 (script too large), HTTP 503 (server at capacity), and HTTP 400 (duplicate nonce / anti-replay).
 
 The workflow also supports concurrent execution isolation testing. When configured with a `concurrency_count` greater than 1, the workflow dispatches multiple independent caller script invocations in parallel — each with its own PQ_Hybrid_KEM session, OIDC token, and attestation validation. Each execution's build script generates its own unique marker at runtime (via `/proc/sys/kernel/random/uuid`), so no marker is passed from the workflow or included in the encrypted payload. After all executions complete, the workflow extracts the `MARKER:<value>` from each execution's stdout and verifies that all markers are unique and that each execution passes filesystem and process isolation tests, demonstrating that the Remote Executor server properly isolates concurrent executions.
 
@@ -44,7 +46,7 @@ sequenceDiagram
     GHA->>CS: Invoke with server_url, script_path, commit_hash, audience, root_cert_pem (hardcoded), expected_pcrs (hardcoded)
 
     CS->>RE: GET /health (no auth, no encryption)
-    RE-->>CS: {status: "healthy", ...}
+    RE-->>CS: {status: "healthy"}
 
     CS->>OIDC: GET ACTIONS_ID_TOKEN_REQUEST_URL?audience={audience} (Bearer ACTIONS_ID_TOKEN_REQUEST_TOKEN)
     OIDC-->>CS: {value: "<oidc_jwt_token>"}
@@ -390,8 +392,10 @@ class RemoteExecutorCaller:
         """
         GET /health - verify server is healthy.
         Does NOT include Authorization header or any authentication.
-        Returns parsed JSON response.
-        Raises CallerError if unhealthy or unreachable.
+        Returns parsed JSON response (expected: {"status": "healthy"}).
+        If the server returns HTTP 429 Too Many Requests, retries with
+        exponential backoff up to max_retries before failing.
+        Raises CallerError if unhealthy, rate limited beyond retries, or unreachable.
         """
 
     def attest(self) -> bytes:
@@ -409,7 +413,7 @@ class RemoteExecutorCaller:
         Initializes self._encryption (ClientEncryption) and derives the Shared_Key via PQ_Hybrid_KEM.
         
         Returns the raw composite server public key bytes.
-        Raises CallerError on validation failure, fingerprint mismatch, missing public_key, or connection error.
+        Raises CallerError on validation failure, fingerprint mismatch, missing public_key, rate limit exceeded, or connection error.
         """
 
     def execute(self, repository_url: str, commit_hash: str,
@@ -425,6 +429,12 @@ class RemoteExecutorCaller:
         No Authorization header.
         
         Decrypts the encrypted response to extract execution_id and attestation_document.
+        
+        Handles specific HTTP error responses:
+        - HTTP 413: Script file exceeds server's MAX_SCRIPT_SIZE_BYTES
+        - HTTP 503: Server at maximum concurrent execution capacity
+        - HTTP 400 (duplicate nonce): Anti-replay rejection
+        - HTTP 429: Rate limited — retries with exponential backoff up to max retries
         Validates the attestation and verifies the nonce matches.
         
         Returns parsed decrypted response dict.
@@ -492,9 +502,13 @@ class RemoteExecutorCaller:
         When output_attestation_document is null and an attestation_error field is present,
         logs a warning with the error details and continues polling without failing.
         
+        When the decrypted response contains `truncated: true`, logs a warning indicating
+        the server output was truncated due to exceeding the maximum output size, and records
+        the truncation status for inclusion in the workflow result reporting.
+        
         Logs incremental output during polling.
         Returns final decrypted response with stdout, stderr, exit_code,
-        output_attestation_document.
+        output_attestation_document, and truncated status.
         Raises CallerError on timeout, repeated HTTP failures, decryption errors,
         or output attestation validation failures.
         """
@@ -522,7 +536,7 @@ class RemoteExecutorCaller:
         Orchestrate full flow:
         health_check → request_oidc_token → attest (get composite server public key, verify fingerprint, PQ_Hybrid_KEM key exchange)
         → execute (encrypted) → validate_attestation → poll_output (encrypted, with per-poll output attestation validation)
-        → finalize attestation artifacts → report results.
+        → finalize attestation artifacts → report results (including truncation status if applicable).
         
         At each attestation point, saves the attestation document and its corresponding
         attested payload via AttestationArtifactCollector (if attestation_output_dir is configured).
@@ -883,16 +897,27 @@ The following values are hardcoded inline in the workflow YAML definition (not u
 **GET /health response:**
 ```json
 {
-  "status": "healthy",
-  "attestation_available": true,
-  "disk_space_mb": 10240,
-  "active_executions": 0
+  "status": "healthy"
 }
 ```
+
+**GET /health error responses:**
+
+| HTTP Status | Meaning | Caller Behavior |
+|-------------|---------|-----------------|
+| 429 | Too Many Requests (rate limited) | Retry with exponential backoff up to max retries, then fail |
+| Non-200 (other) | Server unhealthy or error | Fail with server health error |
 
 **GET /attest?nonce={nonce} request:**
 - No request body, no Authorization header
 - Query parameter: `nonce` (random hex string for freshness verification)
+
+**GET /attest error responses:**
+
+| HTTP Status | Meaning | Caller Behavior |
+|-------------|---------|-----------------|
+| 429 | Too Many Requests (rate limited) | Retry with exponential backoff up to max retries, then fail |
+| Non-200 (other) | Server error | Fail with attest error details |
 
 **GET /attest response:**
 ```json
@@ -924,6 +949,17 @@ Plaintext payload (before encryption):
   "nonce": "<random_hex_string>"
 }
 ```
+
+**POST /execute error responses:**
+
+| HTTP Status | Meaning | Caller Behavior |
+|-------------|---------|-----------------|
+| 400 | Bad Request (duplicate nonce / anti-replay) | Fail with duplicate nonce error |
+| 401 | Unauthorized (invalid/missing OIDC token) | Fail with authentication failure |
+| 403 | Forbidden (repo not authorized or OIDC repo claim mismatch) | Fail with authorization error |
+| 413 | Payload Too Large (script exceeds MAX_SCRIPT_SIZE_BYTES) | Fail with script size limit error |
+| 429 | Too Many Requests (rate limited) | Retry with exponential backoff up to max retries, then fail |
+| 503 | Service Unavailable (max concurrent executions reached) | Fail with server capacity error |
 
 **POST /execute response (encrypted):**
 ```json
@@ -975,7 +1011,8 @@ Decrypted response payload (running — not yet complete):
   "stderr_offset": 0,
   "complete": false,
   "exit_code": null,
-  "output_attestation_document": "<base64-encoded-cbor>"
+  "output_attestation_document": "<base64-encoded-cbor>",
+  "truncated": false
 }
 ```
 
@@ -991,7 +1028,8 @@ Decrypted response payload (running — attestation generation failed):
   "complete": false,
   "exit_code": null,
   "output_attestation_document": null,
-  "attestation_error": "NSM device temporarily unavailable"
+  "attestation_error": "NSM device temporarily unavailable",
+  "truncated": false
 }
 ```
 
@@ -1006,7 +1044,24 @@ Decrypted response payload (completed):
   "stderr_offset": 512,
   "complete": true,
   "exit_code": 0,
-  "output_attestation_document": "<base64-encoded-cbor>"
+  "output_attestation_document": "<base64-encoded-cbor>",
+  "truncated": false
+}
+```
+
+Decrypted response payload (completed — output truncated):
+```json
+{
+  "execution_id": "uuid-v4",
+  "status": "completed",
+  "stdout": "...(truncated)...",
+  "stderr": "...",
+  "stdout_offset": 2048,
+  "stderr_offset": 512,
+  "complete": true,
+  "exit_code": 0,
+  "output_attestation_document": "<base64-encoded-cbor>",
+  "truncated": true
 }
 ```
 
@@ -1102,15 +1157,15 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 ### Property 4: Health check acceptance
 
-*For any* health response JSON, `health_check` should succeed (not raise) if and only if the HTTP status is 200 and the `status` field equals `"healthy"`. For all other combinations of HTTP status or `status` field value, it should raise a `CallerError`.
+*For any* health response JSON, `health_check` should succeed (not raise) if and only if the HTTP status is 200 and the JSON body is `{"status": "healthy"}` with no other fields required. For all other combinations of HTTP status or `status` field value, it should raise a `CallerError`.
 
 **Validates: Requirements 8.2, 8.3**
 
 ### Property 5: Execute HTTP error propagation
 
-*For any* HTTP error status code (4xx or 5xx), when the `/execute` endpoint returns that status, the `execute` method should raise a `CallerError` containing the status code and error details.
+*For any* HTTP error status code (4xx or 5xx), when the `/execute` endpoint returns that status, the `execute` method should raise a `CallerError` containing the status code and error details. Specifically: HTTP 413 should indicate script size exceeds server maximum, HTTP 503 should indicate server at maximum concurrent execution capacity, HTTP 400 with duplicate nonce should indicate anti-replay rejection, and HTTP 429 should trigger retry with exponential backoff before failing with a rate limit error.
 
-**Validates: Requirements 3.8**
+**Validates: Requirements 3.8, 3.14, 3.15, 3.16, 3.17**
 
 ### Property 6: Polling termination on completion with per-poll output attestation
 
@@ -1132,9 +1187,9 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 ### Property 9: Summary contains execution results
 
-*For any* execution result (stdout, stderr, exit_code, attestation status, output integrity status), the generated GitHub Actions job summary string should contain the stdout content, stderr content, exit code value, attestation validation result, and output integrity verification result.
+*For any* execution result (stdout, stderr, exit_code, attestation status, output integrity status, truncation status), the generated GitHub Actions job summary string should contain the stdout content, stderr content, exit code value, attestation validation result, output integrity verification result, and a truncation warning when the output was truncated by the server.
 
-**Validates: Requirements 7.7**
+**Validates: Requirements 7.7, 7.8**
 
 ### Property 10: COSE signature verification rejects tampered payloads
 
@@ -1168,7 +1223,7 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 ### Property 15: OIDC authentication error handling
 
-*For any* HTTP 401 or 403 response from the Remote Executor server on `/execute` or `/execution/{id}/output`, the caller should raise a `CallerError` with an appropriate error message: "authentication failure" for 401 and "repository is not authorized" for 403. For any missing `ACTIONS_ID_TOKEN_REQUEST_URL` or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` environment variable, `request_oidc_token` should raise a `CallerError` indicating that `id-token: write` permission is required.
+*For any* HTTP 401 or 403 response from the Remote Executor server on `/execute` or `/execution/{id}/output`, the caller should raise a `CallerError` with an appropriate error message: "authentication failure" for 401 and "repository is not authorized or OIDC repository claim does not match" for 403. For any missing `ACTIONS_ID_TOKEN_REQUEST_URL` or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` environment variable, `request_oidc_token` should raise a `CallerError` indicating that `id-token: write` permission is required.
 
 **Validates: Requirements 9.5, 9.6, 10.6, 10.7**
 
@@ -1280,6 +1335,12 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 18A.6**
 
+### Property 34: Rate limit retry with exponential backoff
+
+*For any* endpoint that may return HTTP 429 (`/health`, `/attest`, `/execute`), and *for any* number of consecutive 429 responses K, if K is less than the configured maximum retries and the next response is successful, the caller should succeed after K+1 total requests with exponentially increasing delays between retries. If K equals or exceeds the maximum retries, the caller should raise a `CallerError` with a rate limit error message. The retry delays should follow an exponential backoff pattern.
+
+**Validates: Requirements 3.17, 8.6, 11.13**
+
 ## Error Handling
 
 ### Error Categories and Responses
@@ -1291,8 +1352,10 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | OIDC | OIDC provider request fails (HTTP error or connection error) | Raise `CallerError(phase="oidc")` with failure details |
 | Health Check | Server unreachable | Raise `CallerError(phase="health_check")`, workflow step fails |
 | Health Check | Non-200 or status != "healthy" | Raise `CallerError(phase="health_check")`, workflow step fails |
+| Health Check | HTTP 429 Too Many Requests | Retry with exponential backoff up to max retries, then raise `CallerError(phase="health_check")` with rate limit error |
 | Attest | Server unreachable | Raise `CallerError(phase="attest")`, workflow step fails |
 | Attest | HTTP error status | Raise `CallerError(phase="attest")` with status code and response body |
+| Attest | HTTP 429 Too Many Requests | Retry with exponential backoff up to max retries, then raise `CallerError(phase="attest")` with rate limit error |
 | Attest | Attestation validation failure (COSE/PKI/PCR) | Raise `CallerError(phase="attest")` with validation details |
 | Attest | Nonce mismatch in attestation | Raise `CallerError(phase="attest")` indicating nonce verification failure |
 | Attest | Missing `public_key` in attestation payload | Raise `CallerError(phase="attest")` indicating server did not provide a public key |
@@ -1308,7 +1371,11 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | Decryption | Decrypted bytes not valid JSON | Raise `CallerError(phase="encryption")` with deserialization error |
 | Execute | Connection error | Raise `CallerError(phase="execute")`, workflow step fails |
 | Execute | HTTP 401 Unauthorized | Raise `CallerError(phase="execute")` with authentication failure message |
-| Execute | HTTP 403 Forbidden | Raise `CallerError(phase="execute")` with repository not authorized message |
+| Execute | HTTP 403 Forbidden | Raise `CallerError(phase="execute")` with repository not authorized or OIDC repository claim mismatch message |
+| Execute | HTTP 413 Payload Too Large | Raise `CallerError(phase="execute")` with script size exceeds server maximum message |
+| Execute | HTTP 429 Too Many Requests | Retry with exponential backoff up to max retries, then raise `CallerError(phase="execute")` with rate limit error |
+| Execute | HTTP 503 Service Unavailable | Raise `CallerError(phase="execute")` with server at maximum concurrent execution capacity message |
+| Execute | HTTP 400 Bad Request (duplicate nonce) | Raise `CallerError(phase="execute")` with duplicate nonce / anti-replay rejection message |
 | Execute | HTTP 4xx/5xx (other) | Raise `CallerError(phase="execute")` with status code and response body |
 | Execute | Nonce mismatch in attestation from /execute response | Raise `CallerError(phase="attestation")` indicating nonce verification failure |
 | Attestation | Invalid base64 | Raise `CallerError(phase="attestation")` with decoding details |
@@ -1321,7 +1388,7 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | Attestation | Nonce missing or mismatch | Raise `CallerError(phase="attestation")` with expected vs actual nonce |
 | Polling | HTTP error (transient) | Retry up to `max_retries` times, then raise `CallerError(phase="polling")` |
 | Polling | HTTP 401 Unauthorized | Raise `CallerError(phase="polling")` with authentication failure message (no retry) |
-| Polling | HTTP 403 Forbidden | Raise `CallerError(phase="polling")` with repository not authorized message (no retry) |
+| Polling | HTTP 403 Forbidden | Raise `CallerError(phase="polling")` with repository not authorized or OIDC repository claim mismatch message (no retry) |
 | Polling | Decryption failure on poll response | Raise `CallerError(phase="polling")` with decryption error details |
 | Polling | Timeout exceeded | Raise `CallerError(phase="polling")` with elapsed duration |
 | Output Attestation | Null/missing document with `attestation_error` | Log warning with `attestation_error` details, continue polling (output integrity verification skipped for that poll response) |
@@ -1331,6 +1398,7 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | Output Attestation | PCR value missing or mismatch | Raise `CallerError(phase="output_attestation")` identifying the PCR index |
 | Output Attestation | Nonce missing or mismatch | Raise `CallerError(phase="output_attestation")` with expected vs actual nonce |
 | Output Attestation | Digest mismatch | Raise `CallerError(phase="output_attestation")` with both digests |
+| Output Truncation | Poll response contains `truncated: true` | Log warning indicating server output was truncated, record truncation status for summary reporting |
 | Isolation Verification | Execution stdout missing `MARKER:` line | Fail workflow with error identifying the execution and missing marker |
 | Isolation Verification | Duplicate marker values across executions | Fail workflow with isolation violation error identifying the affected executions |
 | Isolation Verification | Execution stdout contains `ISOLATION_FILE:FAIL` | Fail workflow with filesystem isolation violation error identifying the execution |
@@ -1391,10 +1459,10 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 3. **Output integrity verification (per-poll)**: Generate random stdout, stderr, exit_code (representing current output at any point during polling). Compute canonical output and SHA-256 digest. Build a COSE Sign1 attestation with that digest in user_data (signed with test key). Verify `validate_output_attestation` returns True. Then mutate one of stdout/stderr/exit_code and verify it raises. This validates that per-poll output attestation works for both intermediate and final responses.
    `# Feature: gha-remote-executor-caller, Property 3: Output integrity verification (per-poll)`
 
-4. **Health check acceptance**: Generate random HTTP status codes and random `status` field values. Verify `health_check` succeeds iff status code is 200 and status field is "healthy".
+4. **Health check acceptance**: Generate random HTTP status codes and random `status` field values. Verify `health_check` succeeds iff status code is 200 and response body is `{"status": "healthy"}`.
    `# Feature: gha-remote-executor-caller, Property 4: Health check acceptance`
 
-5. **Execute HTTP error propagation**: Generate random 4xx/5xx status codes and response bodies. Verify `execute` raises `CallerError` with the status code.
+5. **Execute HTTP error propagation**: Generate random 4xx/5xx status codes and response bodies. Verify `execute` raises `CallerError` with the status code. Specifically verify HTTP 413 produces script size error, HTTP 503 produces capacity error, HTTP 400 with duplicate nonce produces anti-replay error, and HTTP 429 triggers retry before failing.
    `# Feature: gha-remote-executor-caller, Property 5: Execute HTTP error propagation`
 
 6. **Polling termination on completion with per-poll output attestation**: Generate random N (0-20), create a mock that returns encrypted `complete: false` N times then encrypted `complete: true`. Each mock response includes an `output_attestation_document` with a valid COSE Sign1 structure containing the SHA-256 digest of the current output. Verify exactly N+1 POST requests made, output attestation validated on each poll response, and final decrypted response fields extracted.
@@ -1406,7 +1474,7 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 8. **Exit code propagation**: Generate random integer exit codes (0-255). Mock the full run flow (including PQ_Hybrid_KEM key exchange). Verify `run()` returns the same exit code.
    `# Feature: gha-remote-executor-caller, Property 8: Exit code propagation`
 
-9. **Summary contains execution results**: Generate random execution results. Call summary generation. Verify the output string contains all expected fields.
+9. **Summary contains execution results**: Generate random execution results (including truncation status). Call summary generation. Verify the output string contains all expected fields. When truncation is true, verify the summary includes a truncation warning.
    `# Feature: gha-remote-executor-caller, Property 9: Summary contains execution results`
 
 10. **COSE signature verification rejects tampered payloads**: Generate random attestation payloads, sign with a test P-384 key, then modify the payload bytes. Verify `_verify_cose_signature` raises CallerError.
@@ -1424,7 +1492,7 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 14. **OIDC token in encrypted payload, not in headers**: Generate random OIDC tokens. Set the token on the caller instance. Mock HTTP endpoints and PQ_Hybrid_KEM encryption. Verify `execute` and `poll_output` include the token in the encrypted payload's `oidc_token` field. Verify NO HTTP request to any endpoint includes an `Authorization` header.
     `# Feature: gha-remote-executor-caller, Property 14: OIDC token in encrypted payload, not in headers`
 
-15. **OIDC authentication error handling**: Generate random 401 and 403 HTTP responses for `/execute` and `/execution/{id}/output`. Verify the caller raises `CallerError` with appropriate auth error messages. Also test missing `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` env vars cause `CallerError` with `id-token: write` permission message.
+15. **OIDC authentication error handling**: Generate random 401 and 403 HTTP responses for `/execute` and `/execution/{id}/output`. Verify the caller raises `CallerError` with appropriate auth error messages (including repository claim mismatch for 403). Also test missing `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` env vars cause `CallerError` with `id-token: write` permission message.
     `# Feature: gha-remote-executor-caller, Property 15: OIDC authentication error handling`
 
 16. **AES-256-GCM encryption round-trip**: Generate random JSON-serializable dicts and random 32-byte AES keys. Encrypt via `ClientEncryption.encrypt_payload`, decrypt via `ClientEncryption.decrypt_response` with the same key. Verify the result equals the original dict.
@@ -1483,6 +1551,9 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 31. **Null output attestation skips artifact save**: Generate random poll response sequences where some have null `output_attestation_document`. Verify that `AttestationArtifactCollector` does not create files for null attestation responses and that the poll counter only increments for non-null attestations.
     `# Feature: gha-remote-executor-caller, Property 33: Null output attestation skips artifact save`
 
+32. **Rate limit retry with exponential backoff**: For each endpoint (`/health`, `/attest`, `/execute`), generate random K (number of consecutive 429 responses). When K < max_retries, mock K 429 responses followed by a success response. Verify the caller succeeds after K+1 total requests. When K >= max_retries, verify the caller raises `CallerError` with a rate limit error. Verify retry delays follow exponential backoff.
+    `# Feature: gha-remote-executor-caller, Property 34: Rate limit retry with exponential backoff`
+
 **Unit tests** (specific examples and edge cases):
 
 - Empty `server_url` raises error (Req 1.5)
@@ -1510,9 +1581,9 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Missing `ACTIONS_ID_TOKEN_REQUEST_TOKEN` raises `CallerError` with phase "oidc" (Req 9.5)
 - OIDC provider returns HTTP error raises `CallerError` with phase "oidc" (Req 9.6)
 - Execute with HTTP 401 raises `CallerError` with authentication failure message (Req 10.6)
-- Execute with HTTP 403 raises `CallerError` with repository not authorized message (Req 10.7)
+- Execute with HTTP 403 raises `CallerError` with repository not authorized or OIDC repository claim mismatch message (Req 10.7)
 - Poll output with HTTP 401 raises `CallerError` with authentication failure message (Req 10.6)
-- Poll output with HTTP 403 raises `CallerError` with repository not authorized message (Req 10.7)
+- Poll output with HTTP 403 raises `CallerError` with repository not authorized or OIDC repository claim mismatch message (Req 10.7)
 - No Authorization header on any HTTP request (Req 10.3)
 - Health check does not include OIDC token (Req 10.4)
 - Attest does not include OIDC token or Authorization header (Req 10.5, 11.2)
@@ -1561,4 +1632,15 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Workflow YAML artifact name is `attestation-documents` for single mode (Req 18C.17)
 - Workflow YAML artifact name includes matrix index for concurrent mode (Req 18C.18)
 - CLI argparse includes `--attestation-output-dir` argument with default `attestation-documents` (Req 18E.22, 18E.23)
+- Execute with HTTP 413 raises `CallerError` with script size exceeds server maximum message (Req 3.14)
+- Execute with HTTP 503 raises `CallerError` with server at maximum concurrent execution capacity message (Req 3.15)
+- Execute with HTTP 400 (duplicate nonce) raises `CallerError` with anti-replay rejection message (Req 3.16)
+- Execute with HTTP 429 retries with exponential backoff then raises `CallerError` with rate limit error (Req 3.17)
+- Health check with HTTP 429 retries with exponential backoff then raises `CallerError` with rate limit error (Req 8.6)
+- Attest with HTTP 429 retries with exponential backoff then raises `CallerError` with rate limit error (Req 11.13)
+- Poll response with `truncated: true` logs warning about output truncation (Req 5.16)
+- Truncation status is recorded from poll response for summary inclusion (Req 5.17)
+- Job summary includes truncation warning when output was truncated (Req 7.8)
+- Execute with HTTP 403 raises `CallerError` mentioning repository claim mismatch (Req 10.7)
+- Health check response with only `{"status": "healthy"}` succeeds (Req 8.2)
 

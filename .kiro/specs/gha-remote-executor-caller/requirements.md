@@ -124,6 +124,10 @@ The caller script is organized as a Python package (not a single file) under `.g
 11. THE Caller_Script SHALL include a `nonce` field in the encrypted request payload for attestation freshness verification
 12. THE Caller_Script SHALL generate a unique random nonce for each `/execute` request
 13. THE Caller_Script SHALL verify that the nonce in the Attestation_Document returned within the `/execute` response matches the nonce that was sent
+14. IF the Remote_Executor_Server returns HTTP 413 Payload Too Large, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the script file exceeds the server's maximum allowed script size
+15. IF the Remote_Executor_Server returns HTTP 503 Service Unavailable, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the server is at maximum concurrent execution capacity
+16. IF the Remote_Executor_Server returns HTTP 400 Bad Request with a duplicate nonce error, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the nonce was rejected as a duplicate (anti-replay)
+17. IF the Remote_Executor_Server returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the request with exponential backoff up to a configurable number of retries before failing with a rate limit error
 
 ### Requirement 4: Server Identity Attestation Validation
 
@@ -189,6 +193,8 @@ The caller script is organized as a Python package (not a single file) under `.g
 13. THE Caller_Script SHALL log incremental output during polling to provide real-time feedback in the workflow log
 14. THE encrypted output request payload SHALL include an optional `offset` field to support incremental output retrieval
 15. WHEN a decrypted poll response contains `output_attestation_document` set to null and an `attestation_error` field, THE Caller_Script SHALL log a warning with the attestation error details and continue polling without failing
+16. WHEN a decrypted poll response contains a `truncated` field set to true, THE Caller_Script SHALL log a warning indicating that the server output was truncated due to exceeding the server's maximum output size
+17. THE Caller_Script SHALL record the truncation status from the most recent poll response for inclusion in the workflow result reporting
 
 ### Requirement 6: Output Attestation Validation
 
@@ -232,6 +238,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 5. THE Caller_Workflow SHALL display the output integrity verification result (pass, fail, or skipped) in the workflow log
 6. WHEN the script exit code is non-zero, THE Caller_Workflow SHALL mark the workflow step as failed
 7. THE Caller_Workflow SHALL produce a summary using GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) containing execution results and verification status
+8. WHEN the server output was truncated, THE Caller_Workflow SHALL include a truncation warning in the job summary indicating that the output was truncated by the server due to exceeding the maximum output size
 
 ### Requirement 8: Health Check
 
@@ -240,10 +247,11 @@ The caller script is organized as a Python package (not a single file) under `.g
 #### Acceptance Criteria
 
 1. THE Caller_Script SHALL send an HTTP GET request to `{Server_URL}/health` before submitting the execution request
-2. WHEN the health endpoint returns HTTP 200 with `status` equal to `healthy`, THE Caller_Script SHALL proceed with the execution request
+2. WHEN the health endpoint returns HTTP 200 with a JSON body containing only `{"status": "healthy"}`, THE Caller_Script SHALL proceed with the execution request
 3. IF the health endpoint returns a non-200 status or `status` is not `healthy`, THEN THE Caller_Script SHALL fail the workflow step with a server health error
 4. IF the health endpoint is unreachable, THEN THE Caller_Script SHALL fail the workflow step with a connection error message
 5. THE Caller_Script SHALL set a configurable timeout for the health check request
+6. IF the health endpoint returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the health check with exponential backoff up to a configurable number of retries before failing with a rate limit error
 
 ### Requirement 9: OIDC Token Acquisition
 
@@ -271,7 +279,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 4. THE Caller_Script SHALL NOT include an OIDC_Token in HTTP GET requests to `{Server_URL}/health` (the health endpoint has no authentication)
 5. THE Caller_Script SHALL NOT include an OIDC_Token in HTTP GET requests to `{Server_URL}/attest` (the attest endpoint has no authentication)
 6. IF the Remote_Executor_Server returns HTTP 401 Unauthorized, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating authentication failure
-7. IF the Remote_Executor_Server returns HTTP 403 Forbidden, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the repository is not authorized
+7. IF the Remote_Executor_Server returns HTTP 403 Forbidden, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the repository is not authorized or the OIDC repository claim does not match the requested repository_url
 
 
 ### Requirement 11: Server Attestation and Public Key Retrieval
@@ -292,6 +300,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 9. IF the `/attest` endpoint is unreachable, THEN THE Caller_Script SHALL fail the workflow step with a connection error message
 10. THE Caller_Script SHALL set a configurable timeout for the `/attest` request
 11. THE Caller_Script SHALL verify that the nonce in the validated attestation payload matches the nonce that was sent
+13. IF the `/attest` endpoint returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the request with exponential backoff up to a configurable number of retries before failing with a rate limit error
 
 ##### 11A: Server Public Key Fingerprint Verification
 

@@ -1179,6 +1179,133 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 65. Final checkpoint - Ensure all attestation artifact tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 66. Implement rate limiting retry with exponential backoff
+  - [ ] 66.1 Add `_request_with_retry` helper method to `RemoteExecutorCaller` in `caller.py`
+    - Implement a private method `_request_with_retry(self, method, url, **kwargs)` that wraps `requests.request`
+    - On HTTP 429 response, retry with exponential backoff (e.g., 1s, 2s, 4s, ...) up to `self.max_retries` attempts
+    - On success (non-429) or after exhausting retries, return the response or raise `CallerError` with a rate limit error message
+    - Accept an optional `phase` parameter for error reporting
+    - _Requirements: 3.17, 8.6, 11.13_
+
+  - [ ] 66.2 Update `health_check` in `caller.py` to use `_request_with_retry`
+    - Replace the direct `requests.get` call with `_request_with_retry("GET", ...)` so that HTTP 429 responses trigger retry with exponential backoff
+    - Raise `CallerError(phase="health_check")` with rate limit error if retries are exhausted
+    - _Requirements: 8.6_
+
+  - [ ] 66.3 Update `attest` in `caller.py` to use `_request_with_retry`
+    - Replace the direct `requests.get` call with `_request_with_retry("GET", ...)` so that HTTP 429 responses trigger retry with exponential backoff
+    - Raise `CallerError(phase="attest")` with rate limit error if retries are exhausted
+    - _Requirements: 11.13_
+
+  - [ ] 66.4 Update `execute` in `caller.py` to use `_request_with_retry`
+    - Replace the direct `requests.post` call with `_request_with_retry("POST", ...)` so that HTTP 429 responses trigger retry with exponential backoff
+    - Raise `CallerError(phase="execute")` with rate limit error if retries are exhausted
+    - _Requirements: 3.17_
+
+- [ ] 67. Implement new HTTP error handling in `execute` method
+  - [ ] 67.1 Add HTTP 413 Payload Too Large handling in `execute` in `caller.py`
+    - When `/execute` returns HTTP 413, raise `CallerError(phase="execute")` with a message indicating the script file exceeds the server's maximum allowed script size
+    - _Requirements: 3.14_
+
+  - [ ] 67.2 Add HTTP 503 Service Unavailable handling in `execute` in `caller.py`
+    - When `/execute` returns HTTP 503, raise `CallerError(phase="execute")` with a message indicating the server is at maximum concurrent execution capacity
+    - _Requirements: 3.15_
+
+  - [ ] 67.3 Add HTTP 400 duplicate nonce handling in `execute` in `caller.py`
+    - When `/execute` returns HTTP 400 with a duplicate nonce error, raise `CallerError(phase="execute")` with a message indicating the nonce was rejected as a duplicate (anti-replay)
+    - _Requirements: 3.16_
+
+- [ ] 68. Implement output truncation handling
+  - [ ] 68.1 Update `poll_output` in `caller.py` to detect and log truncation
+    - After decrypting each poll response, check for a `truncated` field set to `true`
+    - When `truncated` is true, log a warning indicating the server output was truncated due to exceeding the maximum output size
+    - Record the truncation status (from the most recent poll response) on the caller instance or return it as part of the poll result
+    - _Requirements: 5.16, 5.17_
+
+  - [ ] 68.2 Update `run` method and `_generate_summary` in `caller.py` to include truncation status
+    - Pass the truncation status from `poll_output` to the summary generation logic
+    - When output was truncated, include a truncation warning in the GitHub Actions job summary
+    - _Requirements: 7.8_
+
+- [ ] 69. Update HTTP 403 error messages
+  - [ ] 69.1 Update HTTP 403 error message in `execute` in `caller.py`
+    - Change the HTTP 403 error message to mention "repository is not authorized or the OIDC repository claim does not match the requested repository_url"
+    - _Requirements: 10.7_
+
+  - [ ] 69.2 Update HTTP 403 error message in `poll_output` in `caller.py`
+    - Change the HTTP 403 error message to mention "repository is not authorized or the OIDC repository claim does not match the requested repository_url"
+    - _Requirements: 10.7_
+
+- [ ] 70. Update health check response expectations
+  - [ ] 70.1 Verify `health_check` in `caller.py` only checks `{"status": "healthy"}`
+    - Confirm the health check implementation only validates `status == "healthy"` and does not depend on any other fields in the response
+    - Update if needed to match the simplified response shape `{"status": "healthy"}`
+    - _Requirements: 8.2_
+
+- [ ] 71. Checkpoint - Ensure all implementation changes compile and existing tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 72. Write property test for rate limit retry with exponential backoff
+  - [ ] 72.1 Write property test for rate limit retry (Property 34)
+    - **Property 34: Rate limit retry with exponential backoff**
+    - For each endpoint (`/health`, `/attest`, `/execute`), generate random K (0 to max_retries+1) consecutive HTTP 429 responses followed by a success response
+    - When K < max_retries, verify the caller succeeds after K+1 total requests with exponentially increasing delays
+    - When K >= max_retries, verify the caller raises `CallerError` with a rate limit error message
+    - Verify retry delays follow an exponential backoff pattern
+    - **Validates: Requirements 3.17, 8.6, 11.13**
+
+- [ ] 73. Write unit tests for rate limiting, new error codes, truncation, and HTTP 403 updates
+  - [ ] 73.1 Write unit tests for HTTP 429 rate limiting on `/health`
+    - Test health_check retries on HTTP 429 and succeeds when next response is 200 (Req 8.6)
+    - Test health_check fails with rate limit error after max retries of HTTP 429 (Req 8.6)
+    - _Requirements: 8.6_
+
+  - [ ] 73.2 Write unit tests for HTTP 429 rate limiting on `/attest`
+    - Test attest retries on HTTP 429 and succeeds when next response is 200 (Req 11.13)
+    - Test attest fails with rate limit error after max retries of HTTP 429 (Req 11.13)
+    - _Requirements: 11.13_
+
+  - [ ] 73.3 Write unit tests for HTTP 429 rate limiting on `/execute`
+    - Test execute retries on HTTP 429 and succeeds when next response is 200 (Req 3.17)
+    - Test execute fails with rate limit error after max retries of HTTP 429 (Req 3.17)
+    - _Requirements: 3.17_
+
+  - [ ] 73.4 Write unit tests for HTTP 413 Payload Too Large on `/execute`
+    - Test execute raises `CallerError` with script size error message on HTTP 413 (Req 3.14)
+    - _Requirements: 3.14_
+
+  - [ ] 73.5 Write unit tests for HTTP 503 Service Unavailable on `/execute`
+    - Test execute raises `CallerError` with server capacity error message on HTTP 503 (Req 3.15)
+    - _Requirements: 3.15_
+
+  - [ ] 73.6 Write unit tests for HTTP 400 duplicate nonce on `/execute`
+    - Test execute raises `CallerError` with duplicate nonce / anti-replay error message on HTTP 400 (Req 3.16)
+    - _Requirements: 3.16_
+
+  - [ ] 73.7 Write unit tests for output truncation handling
+    - Test poll_output logs warning when decrypted response contains `truncated: true` (Req 5.16)
+    - Test poll_output records truncation status from most recent poll response (Req 5.17)
+    - Test job summary includes truncation warning when output was truncated (Req 7.8)
+    - _Requirements: 5.16, 5.17, 7.8_
+
+  - [ ] 73.8 Write unit tests for updated HTTP 403 error messages
+    - Test execute HTTP 403 error message mentions "repository is not authorized or the OIDC repository claim does not match the requested repository_url" (Req 10.7)
+    - Test poll_output HTTP 403 error message mentions "repository is not authorized or the OIDC repository claim does not match the requested repository_url" (Req 10.7)
+    - _Requirements: 10.7_
+
+  - [ ] 73.9 Write unit test for simplified health check response
+    - Test health_check accepts `{"status": "healthy"}` with no other fields (Req 8.2)
+    - _Requirements: 8.2_
+
+  - [ ] 73.10 Update existing unit tests for compatibility with new error handling
+    - Update any existing tests that assert on HTTP 403 error messages to match the new wording
+    - Update any existing tests that reference the old health check response shape
+    - Remove or update any references to `/metrics` endpoint in tests if present
+    - _Requirements: 8.2, 10.7_
+
+- [ ] 74. Final checkpoint - Ensure all server-side security hardening tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP
@@ -1196,3 +1323,4 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - Tasks 48-53 cover module split refactoring for call_remote_executor (Requirements 1.9-1.14; Property 28). The `verify_isolation.py` script remains as a single file.
 - Tasks 54-58 cover per-poll output attestation validation (Requirements 5.6, 5.7, 5.14, 5.15, 6A.1, 6B.8-6B.12, 6C.13; Properties 3, 6, 29). The `poll_output` method now validates output attestation on every poll response, and `run()` no longer calls `validate_output_attestation` separately.
 - Tasks 59-65 cover attestation document artifact persistence (Requirements 18A-18E; Properties 30-33). The `AttestationArtifactCollector` class saves attestation documents and their attested payloads to disk, generates a JSON manifest, and the workflow uploads them as GitHub Actions artifacts.
+- Tasks 66-74 cover server-side security hardening changes: rate limiting retry with exponential backoff on `/health`, `/attest`, `/execute` (Requirements 3.17, 8.6, 11.13; Property 34), new HTTP error codes on `/execute` — 413 Payload Too Large, 503 Service Unavailable, 400 duplicate nonce (Requirements 3.14, 3.15, 3.16), output truncation handling in poll responses and job summary (Requirements 5.16, 5.17, 7.8), updated HTTP 403 error messages (Requirement 10.7), and simplified health check response validation (Requirement 8.2).
