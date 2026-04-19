@@ -1202,16 +1202,16 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Raise `CallerError(phase="execute")` with rate limit error if retries are exhausted
     - _Requirements: 3.17_
 
-- [ ] 67. Implement new HTTP error handling in `execute` method
-  - [ ] 67.1 Add HTTP 413 Payload Too Large handling in `execute` in `caller.py`
+- [x] 67. Implement new HTTP error handling in `execute` method
+  - [x] 67.1 Add HTTP 413 Payload Too Large handling in `execute` in `caller.py`
     - When `/execute` returns HTTP 413, raise `CallerError(phase="execute")` with a message indicating the script file exceeds the server's maximum allowed script size
     - _Requirements: 3.14_
 
-  - [ ] 67.2 Add HTTP 503 Service Unavailable handling in `execute` in `caller.py`
+  - [x] 67.2 Add HTTP 503 Service Unavailable handling in `execute` in `caller.py`
     - When `/execute` returns HTTP 503, raise `CallerError(phase="execute")` with a message indicating the server is at maximum concurrent execution capacity
     - _Requirements: 3.15_
 
-  - [ ] 67.3 Add HTTP 400 duplicate nonce handling in `execute` in `caller.py`
+  - [x] 67.3 Add HTTP 400 duplicate nonce handling in `execute` in `caller.py`
     - When `/execute` returns HTTP 400 with a duplicate nonce error, raise `CallerError(phase="execute")` with a message indicating the nonce was rejected as a duplicate (anti-replay)
     - _Requirements: 3.16_
 

@@ -362,6 +362,20 @@ class RemoteExecutorCaller:
 
         response = self._request_with_retry("POST", url, phase="execute", json=envelope, timeout=self.timeout)
 
+        if response.status_code == 400:
+            # Check for duplicate nonce (anti-replay) error
+            body_text = response.text.lower()
+            if "nonce" in body_text and ("duplicate" in body_text or "replay" in body_text):
+                raise CallerError(
+                    message="Nonce rejected as duplicate (anti-replay): server returned HTTP 400",
+                    phase="execute",
+                    details={"status_code": 400, "body": response.text},
+                )
+            raise CallerError(
+                message=f"Execute failed with HTTP 400: {response.text}",
+                phase="execute",
+                details={"status_code": 400, "body": response.text},
+            )
         if response.status_code == 401:
             raise CallerError(
                 message="Authentication failure: server returned HTTP 401 Unauthorized",
@@ -373,6 +387,18 @@ class RemoteExecutorCaller:
                 message="Repository is not authorized: server returned HTTP 403 Forbidden",
                 phase="execute",
                 details={"status_code": 403, "body": response.text},
+            )
+        if response.status_code == 413:
+            raise CallerError(
+                message="Script file exceeds the server's maximum allowed script size",
+                phase="execute",
+                details={"status_code": 413, "body": response.text},
+            )
+        if response.status_code == 503:
+            raise CallerError(
+                message="Server is at maximum concurrent execution capacity",
+                phase="execute",
+                details={"status_code": 503, "body": response.text},
             )
         if response.status_code != 200:
             raise CallerError(
