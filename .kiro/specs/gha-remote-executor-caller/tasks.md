@@ -1236,17 +1236,17 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Change the HTTP 403 error message to mention "repository is not authorized or the OIDC repository claim does not match the requested repository_url"
     - _Requirements: 10.7_
 
-- [ ] 70. Update health check response expectations
-  - [ ] 70.1 Verify `health_check` in `caller.py` only checks `{"status": "healthy"}`
+- [x] 70. Update health check response expectations
+  - [x] 70.1 Verify `health_check` in `caller.py` only checks `{"status": "healthy"}`
     - Confirm the health check implementation only validates `status == "healthy"` and does not depend on any other fields in the response
     - Update if needed to match the simplified response shape `{"status": "healthy"}`
     - _Requirements: 8.2_
 
-- [ ] 71. Checkpoint - Ensure all implementation changes compile and existing tests pass
+- [x] 71. Checkpoint - Ensure all implementation changes compile and existing tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 72. Write property test for rate limit retry with exponential backoff
-  - [ ] 72.1 Write property test for rate limit retry (Property 34)
+- [x] 72. Write property test for rate limit retry with exponential backoff
+  - [x] 72.1 Write property test for rate limit retry (Property 34)
     - **Property 34: Rate limit retry with exponential backoff**
     - For each endpoint (`/health`, `/attest`, `/execute`), generate random K (0 to max_retries+1) consecutive HTTP 429 responses followed by a success response
     - When K < max_retries, verify the caller succeeds after K+1 total requests with exponentially increasing delays

@@ -2247,3 +2247,191 @@ class TestNullOutputAttestationWithAttestationError:
         assert result["exit_code"] == exit_code_val
         # Status should be "partial" since some polls had null attestation
         assert result["output_integrity_status"] == "partial"
+
+
+# ---------------------------------------------------------------------------
+# Property 34: Rate limit retry with exponential backoff
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 34: Rate limit retry with exponential backoff
+# **Validates: Requirements 3.17, 8.6, 11.13**
+class TestRateLimitRetryWithExponentialBackoff:
+    """Property 34: Rate limit retry with exponential backoff."""
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=0, max_value=5),
+    )
+    @settings(max_examples=30)
+    def test_health_get_succeeds_when_k_less_than_max(self, max_retries: int, k_retries: int):
+        """For /health (GET), K < max_retries consecutive 429s followed by success → caller succeeds."""
+        assume(k_retries < max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+        success_resp.json.return_value = {"status": "healthy"}
+
+        side_effects = [rate_limit_resp] * k_retries + [success_resp]
+
+        with patch("call_remote_executor.caller.requests.get", side_effect=side_effects) as mock_get:
+            with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
+                result = caller._request_with_retry("GET", "http://localhost:8080/health", phase="health_check")
+
+        assert result.status_code == 200
+        assert mock_get.call_count == k_retries + 1
+        assert mock_sleep.call_count == k_retries
+        for i in range(k_retries):
+            assert mock_sleep.call_args_list[i][0][0] == 2 ** i
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=1, max_value=6),
+    )
+    @settings(max_examples=30)
+    def test_health_get_fails_when_k_gte_max(self, max_retries: int, k_retries: int):
+        """For /health (GET), K >= max_retries consecutive 429s → CallerError with rate limit message."""
+        assume(k_retries >= max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        # Provide enough 429 responses for all attempts
+        side_effects = [rate_limit_resp] * (max_retries + 1)
+
+        with patch("call_remote_executor.caller.requests.get", side_effect=side_effects):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller._request_with_retry("GET", "http://localhost:8080/health", phase="health_check")
+                assert "Rate limited" in exc_info.value.message
+                assert exc_info.value.phase == "health_check"
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=0, max_value=5),
+    )
+    @settings(max_examples=30)
+    def test_attest_get_succeeds_when_k_less_than_max(self, max_retries: int, k_retries: int):
+        """For /attest (GET), K < max_retries consecutive 429s followed by success → caller succeeds."""
+        assume(k_retries < max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+
+        side_effects = [rate_limit_resp] * k_retries + [success_resp]
+
+        with patch("call_remote_executor.caller.requests.get", side_effect=side_effects) as mock_get:
+            with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
+                result = caller._request_with_retry("GET", "http://localhost:8080/attest", phase="attest")
+
+        assert result.status_code == 200
+        assert mock_get.call_count == k_retries + 1
+        assert mock_sleep.call_count == k_retries
+        for i in range(k_retries):
+            assert mock_sleep.call_args_list[i][0][0] == 2 ** i
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=1, max_value=6),
+    )
+    @settings(max_examples=30)
+    def test_attest_get_fails_when_k_gte_max(self, max_retries: int, k_retries: int):
+        """For /attest (GET), K >= max_retries consecutive 429s → CallerError with rate limit message."""
+        assume(k_retries >= max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        side_effects = [rate_limit_resp] * (max_retries + 1)
+
+        with patch("call_remote_executor.caller.requests.get", side_effect=side_effects):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller._request_with_retry("GET", "http://localhost:8080/attest", phase="attest")
+                assert "Rate limited" in exc_info.value.message
+                assert exc_info.value.phase == "attest"
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=0, max_value=5),
+    )
+    @settings(max_examples=30)
+    def test_execute_post_succeeds_when_k_less_than_max(self, max_retries: int, k_retries: int):
+        """For /execute (POST), K < max_retries consecutive 429s followed by success → caller succeeds."""
+        assume(k_retries < max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+
+        side_effects = [rate_limit_resp] * k_retries + [success_resp]
+
+        with patch("call_remote_executor.caller.requests.post", side_effect=side_effects) as mock_post:
+            with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
+                result = caller._request_with_retry("POST", "http://localhost:8080/execute", phase="execute")
+
+        assert result.status_code == 200
+        assert mock_post.call_count == k_retries + 1
+        assert mock_sleep.call_count == k_retries
+        for i in range(k_retries):
+            assert mock_sleep.call_args_list[i][0][0] == 2 ** i
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=1, max_value=6),
+    )
+    @settings(max_examples=30)
+    def test_execute_post_fails_when_k_gte_max(self, max_retries: int, k_retries: int):
+        """For /execute (POST), K >= max_retries consecutive 429s → CallerError with rate limit message."""
+        assume(k_retries >= max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        side_effects = [rate_limit_resp] * (max_retries + 1)
+
+        with patch("call_remote_executor.caller.requests.post", side_effect=side_effects):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller._request_with_retry("POST", "http://localhost:8080/execute", phase="execute")
+                assert "Rate limited" in exc_info.value.message
+                assert exc_info.value.phase == "execute"
+
+    @given(
+        max_retries=st.integers(min_value=1, max_value=5),
+        k_retries=st.integers(min_value=1, max_value=4),
+    )
+    @settings(max_examples=30)
+    def test_exponential_backoff_delays(self, max_retries: int, k_retries: int):
+        """Verify retry delays follow exponential backoff pattern: 2^0, 2^1, 2^2, ..."""
+        assume(k_retries < max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+
+        rate_limit_resp = MagicMock()
+        rate_limit_resp.status_code = 429
+
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+
+        side_effects = [rate_limit_resp] * k_retries + [success_resp]
+
+        with patch("call_remote_executor.caller.requests.get", side_effect=side_effects):
+            with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
+                caller._request_with_retry("GET", "http://localhost:8080/health", phase="health_check")
+
+        expected_delays = [2 ** i for i in range(k_retries)]
+        actual_delays = [call[0][0] for call in mock_sleep.call_args_list]
+        assert actual_delays == expected_delays
