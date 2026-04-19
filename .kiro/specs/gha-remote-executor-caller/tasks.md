@@ -1215,14 +1215,14 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - When `/execute` returns HTTP 400 with a duplicate nonce error, raise `CallerError(phase="execute")` with a message indicating the nonce was rejected as a duplicate (anti-replay)
     - _Requirements: 3.16_
 
-- [ ] 68. Implement output truncation handling
-  - [ ] 68.1 Update `poll_output` in `caller.py` to detect and log truncation
+- [x] 68. Implement output truncation handling
+  - [x] 68.1 Update `poll_output` in `caller.py` to detect and log truncation
     - After decrypting each poll response, check for a `truncated` field set to `true`
     - When `truncated` is true, log a warning indicating the server output was truncated due to exceeding the maximum output size
     - Record the truncation status (from the most recent poll response) on the caller instance or return it as part of the poll result
     - _Requirements: 5.16, 5.17_
 
-  - [ ] 68.2 Update `run` method and `_generate_summary` in `caller.py` to include truncation status
+  - [x] 68.2 Update `run` method and `_generate_summary` in `caller.py` to include truncation status
     - Pass the truncation status from `poll_output` to the summary generation logic
     - When output was truncated, include a truncation warning in the GitHub Actions job summary
     - _Requirements: 7.8_

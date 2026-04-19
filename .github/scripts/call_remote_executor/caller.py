@@ -530,6 +530,11 @@ class RemoteExecutorCaller:
             encrypted_response_b64 = resp_data.get("encrypted_response", "")
             data = self._encryption.decrypt_response(encrypted_response_b64)
 
+            # Check for output truncation
+            truncated = data.get("truncated", False)
+            if truncated:
+                logger.warning("Server output was truncated due to exceeding the maximum output size")
+
             # Log incremental output
             stdout = data.get("stdout", "")
             stderr = data.get("stderr", "")
@@ -589,6 +594,7 @@ class RemoteExecutorCaller:
                     "exit_code": exit_code,
                     "output_attestation_document": output_attestation_b64,
                     "output_integrity_status": output_integrity_status,
+                    "truncated": truncated,
                 }
 
             time.sleep(self.poll_interval)
@@ -600,6 +606,7 @@ class RemoteExecutorCaller:
         exit_code: int,
         attestation_status: str,
         output_integrity_status: str,
+        truncated: bool = False,
     ) -> str:
         """Generate a GitHub Actions job summary string."""
         lines = [
@@ -609,6 +616,11 @@ class RemoteExecutorCaller:
             f"**Attestation Validation:** {attestation_status}",
             f"**Output Integrity:** {output_integrity_status}",
             "",
+        ]
+        if truncated:
+            lines.append("⚠️ **Warning:** Server output was truncated due to exceeding the maximum output size")
+            lines.append("")
+        lines.extend([
             "### stdout",
             "```",
             stdout,
@@ -618,7 +630,7 @@ class RemoteExecutorCaller:
             "```",
             stderr,
             "```",
-        ]
+        ])
         return "\n".join(lines)
 
     def run(
@@ -668,6 +680,7 @@ class RemoteExecutorCaller:
             stderr = output["stderr"]
             exit_code = output["exit_code"]
             output_integrity_status = output["output_integrity_status"]
+            truncated = output.get("truncated", False)
 
             logger.info("exit_code: %s", exit_code)
             logger.info("Output integrity: %s", output_integrity_status)
@@ -675,6 +688,7 @@ class RemoteExecutorCaller:
             # Generate summary
             self.summary = self._generate_summary(
                 stdout, stderr, exit_code, attestation_status, output_integrity_status,
+                truncated=truncated,
             )
 
             return exit_code
