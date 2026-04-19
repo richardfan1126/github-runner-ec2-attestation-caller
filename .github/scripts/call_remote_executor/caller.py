@@ -384,7 +384,7 @@ class RemoteExecutorCaller:
             )
         if response.status_code == 403:
             raise CallerError(
-                message="Repository is not authorized: server returned HTTP 403 Forbidden",
+                message="Repository is not authorized or the OIDC repository claim does not match the requested repository_url: server returned HTTP 403 Forbidden",
                 phase="execute",
                 details={"status_code": 403, "body": response.text},
             )
@@ -507,7 +507,7 @@ class RemoteExecutorCaller:
                 )
             if response.status_code == 403:
                 raise CallerError(
-                    message="Repository is not authorized: server returned HTTP 403 Forbidden",
+                    message="Repository is not authorized or the OIDC repository claim does not match the requested repository_url: server returned HTTP 403 Forbidden",
                     phase="polling",
                     details={"status_code": 403, "body": response.text},
                 )

@@ -1227,12 +1227,12 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - When output was truncated, include a truncation warning in the GitHub Actions job summary
     - _Requirements: 7.8_
 
-- [ ] 69. Update HTTP 403 error messages
-  - [ ] 69.1 Update HTTP 403 error message in `execute` in `caller.py`
+- [x] 69. Update HTTP 403 error messages
+  - [x] 69.1 Update HTTP 403 error message in `execute` in `caller.py`
     - Change the HTTP 403 error message to mention "repository is not authorized or the OIDC repository claim does not match the requested repository_url"
     - _Requirements: 10.7_
 
-  - [ ] 69.2 Update HTTP 403 error message in `poll_output` in `caller.py`
+  - [x] 69.2 Update HTTP 403 error message in `poll_output` in `caller.py`
     - Change the HTTP 403 error message to mention "repository is not authorized or the OIDC repository claim does not match the requested repository_url"
     - _Requirements: 10.7_
 
