@@ -85,8 +85,13 @@ _TEST_CA_PEM, _TEST_CA_DER, _TEST_SIGN_KEY, _TEST_SIGN_CERT_DER = _generate_test
 # ---------------------------------------------------------------------------
 
 def _make_caller() -> RemoteExecutorCaller:
-    """Create a caller instance for testing (no root_cert_pem/expected_pcrs => crypto skipped)."""
-    return RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+    """Create a caller instance for testing."""
+    return RemoteExecutorCaller(
+        server_url="http://localhost:8080",
+        audience="test-audience",
+        root_cert_pem="DUMMY-ROOT-CERT-PEM",
+        expected_pcrs={0: "aa" * 48},
+    )
 
 
 def _setup_encryption(caller):
@@ -235,7 +240,10 @@ class TestAttestationDecodeRoundTrip:
 
         b64_str = _wrap_cose_sign1(doc)
 
-        result = caller.validate_attestation(b64_str)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            result = caller.validate_attestation(b64_str)
 
         for field in EXPECTED_ATTESTATION_FIELDS:
             assert result[field] == doc[field], (
@@ -259,7 +267,10 @@ class TestAttestationDecodeRoundTrip:
 
         b64_str = _wrap_cose_sign1(doc_with_hex_nonce)
 
-        result = caller.validate_attestation(b64_str, expected_nonce=nonce_str)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            result = caller.validate_attestation(b64_str, expected_nonce=nonce_str)
 
         for field in EXPECTED_ATTESTATION_FIELDS:
             assert result[field] == doc_with_hex_nonce[field]
@@ -299,11 +310,17 @@ class TestAttestationStructuralFieldValidation:
         all_present = len(fields_to_remove) == 0
 
         if all_present:
-            result = caller.validate_attestation(b64_str)
+            with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+                 patch("call_remote_executor.attestation.verify_cose_signature"), \
+                 patch("call_remote_executor.attestation.validate_pcrs"):
+                result = caller.validate_attestation(b64_str)
             assert isinstance(result, dict)
         else:
-            with pytest.raises(CallerError) as exc_info:
-                caller.validate_attestation(b64_str)
+            with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+                 patch("call_remote_executor.attestation.verify_cose_signature"), \
+                 patch("call_remote_executor.attestation.validate_pcrs"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.validate_attestation(b64_str)
             assert exc_info.value.phase == "attestation"
 
 
@@ -406,6 +423,7 @@ class TestCOSESignatureRejectsTamperedPayloads:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             root_cert_pem=_TEST_CA_PEM,
+            expected_pcrs={0: "aa" * 48},
             audience="test-audience",
         )
 
@@ -438,6 +456,7 @@ class TestPCRValidation:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             expected_pcrs=expected,
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
             audience="test-audience",
         )
         # Should not raise
@@ -463,6 +482,7 @@ class TestPCRValidation:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             expected_pcrs=expected,
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
             audience="test-audience",
         )
         with pytest.raises(CallerError) as exc_info:
@@ -481,6 +501,7 @@ class TestPCRValidation:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             expected_pcrs=expected,
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
             audience="test-audience",
         )
         with pytest.raises(CallerError) as exc_info:
@@ -552,6 +573,7 @@ class TestCertificateChainValidation:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             root_cert_pem=root_pem,
+            expected_pcrs={0: "aa" * 48},
             audience="test-audience",
         )
         # Should not raise — intermediate is in cabundle, root is pinned
@@ -579,6 +601,7 @@ class TestCertificateChainValidation:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             root_cert_pem=other_ca_pem,
+            expected_pcrs={0: "aa" * 48},
             audience="test-audience",
         )
         with pytest.raises(CallerError) as exc_info:
@@ -643,6 +666,7 @@ class TestCertificateChainValidation:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             root_cert_pem=pinned_root_pem,
+            expected_pcrs={0: "aa" * 48},
             audience="test-audience",
         )
         # Rogue CA is in cabundle but NOT the pinned root — must be REJECTED
@@ -790,6 +814,8 @@ class TestPollingTerminationOnCompletion:
             poll_interval=0,  # No sleep in tests
             max_poll_duration=9999,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -893,6 +919,8 @@ class TestPollingRetryOnTransientErrors:
             max_poll_duration=9999,
             max_retries=max_retries,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -932,6 +960,8 @@ class TestPollingRetryOnTransientErrors:
             max_poll_duration=9999,
             max_retries=max_retries,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "test-token"
         _setup_encryption(caller)
@@ -957,6 +987,8 @@ class TestPollingRetryOnTransientErrors:
             max_poll_duration=9999,
             max_retries=max_retries,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -998,6 +1030,8 @@ class TestExitCodePropagation:
             poll_interval=0,
             max_poll_duration=9999,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
 
         health_response = MagicMock()
@@ -1047,6 +1081,8 @@ class TestSummaryContainsExecutionResults:
             poll_interval=0,
             max_poll_duration=9999,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
 
         health_response = MagicMock()
@@ -1104,6 +1140,8 @@ class TestOIDCTokenAcquisition:
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             audience=audience,
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
 
         mock_response = MagicMock()
@@ -1152,7 +1190,7 @@ class TestOIDCTokenTransmission:
     @settings(max_examples=50)
     def test_execute_includes_bearer_token(self, oidc_token: str):
         """execute() includes OIDC token in the encrypted payload (no Authorization header)."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
         caller._oidc_token = oidc_token
         server_enc = _setup_encryption(caller)
 
@@ -1190,6 +1228,8 @@ class TestOIDCTokenTransmission:
             poll_interval=0,
             max_poll_duration=9999,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = oidc_token
         server_enc = _setup_encryption(caller)
@@ -1226,7 +1266,7 @@ class TestOIDCTokenTransmission:
     @settings(max_examples=50)
     def test_health_check_excludes_authorization(self, oidc_token: str):
         """health_check() does NOT include Authorization header even when token is set."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
         caller._oidc_token = oidc_token
 
         mock_response = MagicMock()
@@ -1259,7 +1299,7 @@ class TestOIDCAuthenticationErrorHandling:
     @settings(max_examples=50)
     def test_execute_auth_errors(self, status_code: int, response_body: str):
         """execute() raises CallerError with correct message for 401/403."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
         caller._oidc_token = "some-token"
         _setup_encryption(caller)
 
@@ -1291,6 +1331,8 @@ class TestOIDCAuthenticationErrorHandling:
             max_poll_duration=9999,
             max_retries=5,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "some-token"
         _setup_encryption(caller)
@@ -1317,7 +1359,7 @@ class TestOIDCAuthenticationErrorHandling:
     @settings(max_examples=20)
     def test_missing_env_vars_raise_oidc_error(self, missing_var: str):
         """request_oidc_token raises CallerError when OIDC env vars are missing."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         env_vars = {}
         if missing_var == "ACTIONS_ID_TOKEN_REQUEST_URL":
@@ -1343,7 +1385,7 @@ class TestOIDCAuthenticationErrorHandling:
     @settings(max_examples=20)
     def test_oidc_provider_http_error(self, status_code: int):
         """request_oidc_token raises CallerError when OIDC provider returns HTTP error."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         mock_response = MagicMock()
         mock_response.status_code = status_code
@@ -1529,7 +1571,10 @@ class TestNonceFreshnessVerification:
         payload = _make_test_payload(extra_fields={"nonce": nonce.encode("utf-8")})
         b64_str = _wrap_cose_sign1(payload)
 
-        result = caller.validate_attestation(b64_str, expected_nonce=nonce)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            result = caller.validate_attestation(b64_str, expected_nonce=nonce)
         assert isinstance(result, dict)
         assert result["nonce"] == nonce.encode("utf-8")
 
@@ -1545,8 +1590,11 @@ class TestNonceFreshnessVerification:
         payload = _make_test_payload(extra_fields={"nonce": nonce.encode("utf-8")})
         b64_str = _wrap_cose_sign1(payload)
 
-        with pytest.raises(CallerError) as exc_info:
-            caller.validate_attestation(b64_str, expected_nonce=other_nonce)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            with pytest.raises(CallerError) as exc_info:
+                caller.validate_attestation(b64_str, expected_nonce=other_nonce)
         assert exc_info.value.phase == "attestation"
         assert "nonce" in exc_info.value.message.lower() or "mismatch" in exc_info.value.message.lower()
 
@@ -1560,8 +1608,11 @@ class TestNonceFreshnessVerification:
         payload = _make_test_payload()  # No nonce field
         b64_str = _wrap_cose_sign1(payload)
 
-        with pytest.raises(CallerError) as exc_info:
-            caller.validate_attestation(b64_str, expected_nonce=nonce)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            with pytest.raises(CallerError) as exc_info:
+                caller.validate_attestation(b64_str, expected_nonce=nonce)
         assert exc_info.value.phase == "attestation"
         assert "nonce" in exc_info.value.message.lower() or "missing" in exc_info.value.message.lower()
 
@@ -1576,7 +1627,10 @@ class TestNonceFreshnessVerification:
         b64_str = _wrap_cose_sign1(payload)
 
         # Should pass — no nonce verification when expected_nonce is None
-        result = caller.validate_attestation(b64_str)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            result = caller.validate_attestation(b64_str)
         assert isinstance(result, dict)
 
     def test_generate_nonce_produces_unique_values(self):
@@ -1606,7 +1660,10 @@ class TestNonceFreshnessVerification:
         b64_str = _wrap_cose_sign1(payload)
 
         caller = _make_caller()
-        result = caller.validate_output_attestation(b64_str, stdout_val, stderr_val, exit_code_val, expected_nonce=nonce)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            result = caller.validate_output_attestation(b64_str, stdout_val, stderr_val, exit_code_val, expected_nonce=nonce)
         assert result is True
 
     @given(
@@ -1630,8 +1687,11 @@ class TestNonceFreshnessVerification:
         b64_str = _wrap_cose_sign1(payload)
 
         caller = _make_caller()
-        with pytest.raises(CallerError) as exc_info:
-            caller.validate_output_attestation(b64_str, stdout_val, stderr_val, exit_code_val, expected_nonce=other_nonce)
+        with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+             patch("call_remote_executor.attestation.verify_cose_signature"), \
+             patch("call_remote_executor.attestation.validate_pcrs"):
+            with pytest.raises(CallerError) as exc_info:
+                caller.validate_output_attestation(b64_str, stdout_val, stderr_val, exit_code_val, expected_nonce=other_nonce)
         assert exc_info.value.phase == "output_attestation"
 
 
@@ -1653,7 +1713,7 @@ class TestEncryptedEnvelopeStructure:
     @settings(max_examples=30)
     def test_execute_sends_encrypted_envelope(self, repository_url: str, commit_hash: str, script_path: str, github_token: str):
         """execute() sends JSON body with encrypted_payload and client_public_key, both base64-encoded."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience")
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
         caller._oidc_token = "test-oidc-token"
 
         # Set up encryption (simulating attest() having been called)
@@ -2147,7 +2207,7 @@ class TestPublicAPIPreservation:
     @settings(max_examples=7)
     def test_delegation_methods_are_callable_on_instance(self, method_name: str):
         """Each delegation method is callable on a RemoteExecutorCaller instance."""
-        caller = RemoteExecutorCaller(server_url="http://localhost:9999")
+        caller = RemoteExecutorCaller(server_url="http://localhost:9999", root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
         method = getattr(caller, method_name)
         assert callable(method)
 
@@ -2227,6 +2287,8 @@ class TestNullOutputAttestationWithAttestationError:
             poll_interval=0,
             max_poll_duration=9999,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -2308,6 +2370,8 @@ class TestNullOutputAttestationWithAttestationError:
             poll_interval=0,
             max_poll_duration=9999,
             audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -2378,7 +2442,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_health_get_succeeds_when_k_less_than_max(self, max_retries: int, k_retries: int):
         """For /health (GET), K < max_retries consecutive 429s followed by success → caller succeeds."""
         assume(k_retries < max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2407,7 +2471,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_health_get_fails_when_k_gte_max(self, max_retries: int, k_retries: int):
         """For /health (GET), K >= max_retries consecutive 429s → CallerError with rate limit message."""
         assume(k_retries >= max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2430,7 +2494,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_attest_get_succeeds_when_k_less_than_max(self, max_retries: int, k_retries: int):
         """For /attest (GET), K < max_retries consecutive 429s followed by success → caller succeeds."""
         assume(k_retries < max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2458,7 +2522,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_attest_get_fails_when_k_gte_max(self, max_retries: int, k_retries: int):
         """For /attest (GET), K >= max_retries consecutive 429s → CallerError with rate limit message."""
         assume(k_retries >= max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2480,7 +2544,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_execute_post_succeeds_when_k_less_than_max(self, max_retries: int, k_retries: int):
         """For /execute (POST), K < max_retries consecutive 429s followed by success → caller succeeds."""
         assume(k_retries < max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2508,7 +2572,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_execute_post_fails_when_k_gte_max(self, max_retries: int, k_retries: int):
         """For /execute (POST), K >= max_retries consecutive 429s → CallerError with rate limit message."""
         assume(k_retries >= max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2530,7 +2594,7 @@ class TestRateLimitRetryWithExponentialBackoff:
     def test_exponential_backoff_delays(self, max_retries: int, k_retries: int):
         """Verify retry delays follow exponential backoff pattern: 2^0, 2^1, 2^2, ..."""
         assume(k_retries < max_retries)
-        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries)
+        caller = RemoteExecutorCaller(server_url="http://localhost:8080", audience="test-audience", max_retries=max_retries, root_cert_pem="DUMMY-ROOT-CERT-PEM", expected_pcrs={0: "aa" * 48})
 
         rate_limit_resp = MagicMock()
         rate_limit_resp.status_code = 429
@@ -2547,3 +2611,63 @@ class TestRateLimitRetryWithExponentialBackoff:
         expected_delays = [2 ** i for i in range(k_retries)]
         actual_delays = [call[0][0] for call in mock_sleep.call_args_list]
         assert actual_delays == expected_delays
+
+
+# ---------------------------------------------------------------------------
+# Property 43: Mandatory attestation parameters
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 43: Mandatory attestation parameters
+# **Validates: Requirements 4B.13**
+class TestMandatoryAttestationParameters:
+    """Property 43: RemoteExecutorCaller must raise CallerError at construction time
+    when root_cert_pem is empty/falsy or expected_pcrs is None/empty.
+    Valid values must construct successfully."""
+
+    @given(
+        root_cert_pem=st.just(""),
+    )
+    @settings(max_examples=10)
+    def test_empty_root_cert_pem_raises_caller_error(self, root_cert_pem: str):
+        """Constructing RemoteExecutorCaller with empty root_cert_pem raises CallerError."""
+        with pytest.raises((CallerError, TypeError)):
+            RemoteExecutorCaller(
+                server_url="http://localhost:8080",
+                root_cert_pem=root_cert_pem,
+                expected_pcrs={0: "aa" * 48},
+            )
+
+    @given(
+        expected_pcrs=st.one_of(
+            st.just(None),
+            st.just({}),
+        ),
+    )
+    @settings(max_examples=10)
+    def test_none_or_empty_expected_pcrs_raises_caller_error(self, expected_pcrs):
+        """Constructing RemoteExecutorCaller with None or empty expected_pcrs raises CallerError."""
+        with pytest.raises((CallerError, TypeError)):
+            RemoteExecutorCaller(
+                server_url="http://localhost:8080",
+                root_cert_pem="VALID-ROOT-CERT-PEM",
+                expected_pcrs=expected_pcrs,
+            )
+
+    @given(
+        root_cert_pem=st.text(min_size=1, max_size=200, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+        pcr_index=st.integers(min_value=0, max_value=15),
+        pcr_value=st.text(min_size=1, max_size=96, alphabet=st.characters(whitelist_categories=("L", "N"))),
+    )
+    @settings(max_examples=30)
+    def test_valid_params_construct_successfully(self, root_cert_pem: str, pcr_index: int, pcr_value: str):
+        """Constructing RemoteExecutorCaller with valid root_cert_pem and expected_pcrs succeeds."""
+        assume(bool(root_cert_pem))  # Must be non-empty
+
+        # Should not raise
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem=root_cert_pem,
+            expected_pcrs={pcr_index: pcr_value},
+        )
+        assert caller.root_cert_pem == root_cert_pem
+        assert caller.expected_pcrs == {pcr_index: pcr_value}

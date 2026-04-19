@@ -1326,18 +1326,18 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test that a certificate properly chained through cabundle intermediates to the pinned root passes
     - _Requirements: 4B.9, 4B.12_
 
-- [ ] 76. Make `root_cert_pem` and `expected_pcrs` mandatory on `RemoteExecutorCaller`
-  - [ ] 76.1 Update `RemoteExecutorCaller.__init__` in `caller.py` to require attestation parameters
+- [x] 76. Make `root_cert_pem` and `expected_pcrs` mandatory on `RemoteExecutorCaller`
+  - [x] 76.1 Update `RemoteExecutorCaller.__init__` in `caller.py` to require attestation parameters
     - Remove default values for `root_cert_pem` (was `""`) and `expected_pcrs` (was `None`)
     - Make both parameters positional-required or keyword-required with no defaults
     - Raise `CallerError` in `__init__` if `root_cert_pem` is empty/falsy or `expected_pcrs` is None/empty
     - _Requirements: 4B.13_
 
-  - [ ] 76.2 Update all existing tests that construct `RemoteExecutorCaller` with empty/None attestation params
+  - [x] 76.2 Update all existing tests that construct `RemoteExecutorCaller` with empty/None attestation params
     - Ensure all test constructors provide valid `root_cert_pem` and `expected_pcrs` values
     - _Requirements: 4B.13_
 
-  - [ ] 76.3 Write property test for mandatory attestation parameters
+  - [x] 76.3 Write property test for mandatory attestation parameters
     - **Property 43: Mandatory attestation parameters**
     - Attempt to construct `RemoteExecutorCaller` with empty `root_cert_pem` — verify error raised
     - Attempt to construct with `None` `expected_pcrs` — verify error raised
@@ -1345,7 +1345,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Construct with valid values — verify no error
     - **Validates: Requirements 4B.13**
 
-  - [ ] 76.4 Write unit tests for mandatory attestation parameter validation
+  - [x] 76.4 Write unit tests for mandatory attestation parameter validation
     - Test empty `root_cert_pem` raises `CallerError` at construction time
     - Test `None` `expected_pcrs` raises `CallerError` at construction time
     - Test empty dict `expected_pcrs` raises `CallerError` at construction time

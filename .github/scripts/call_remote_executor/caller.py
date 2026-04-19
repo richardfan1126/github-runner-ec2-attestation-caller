@@ -24,15 +24,27 @@ class RemoteExecutorCaller:
     def __init__(
         self,
         server_url: str,
+        root_cert_pem: str,
+        expected_pcrs: dict[int, str],
         timeout: int = 30,
         poll_interval: int = 5,
         max_poll_duration: int = 600,
         max_retries: int = 3,
-        root_cert_pem: str = "",
-        expected_pcrs: dict[int, str] | None = None,
         audience: str = "",
         attestation_output_dir: str | None = None,
     ):
+        if not root_cert_pem:
+            raise CallerError(
+                message="root_cert_pem is required: attestation trust anchor must be configured",
+                phase="init",
+                details={"parameter": "root_cert_pem"},
+            )
+        if not expected_pcrs:
+            raise CallerError(
+                message="expected_pcrs is required: PCR policy must be configured",
+                phase="init",
+                details={"parameter": "expected_pcrs"},
+            )
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
         self.poll_interval = poll_interval
