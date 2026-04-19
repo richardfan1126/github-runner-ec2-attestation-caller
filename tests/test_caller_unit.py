@@ -2467,3 +2467,386 @@ class TestCLIAttestationOutputDirArgument:
             "--expected-pcrs", '{"4":"aa"}',
         ])
         assert args.attestation_output_dir == "attestation-documents"
+
+
+# ---------------------------------------------------------------------------
+# Task 73: Unit tests for rate limiting, new error codes, truncation,
+#           and HTTP 403 updates
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCheckRateLimiting:
+    """Unit tests for HTTP 429 rate limiting on /health.
+    Validates: Requirement 8.6"""
+
+    def test_health_check_retries_on_429_then_succeeds(self):
+        """health_check retries on HTTP 429 and succeeds when next response is 200.
+        Validates: Requirement 8.6"""
+        caller = _make_caller()
+        mock_429 = type("MockResp", (), {"status_code": 429, "text": "Too Many Requests"})()
+        mock_200 = MagicMock()
+        mock_200.status_code = 200
+        mock_200.json.return_value = {"status": "healthy"}
+
+        with patch("call_remote_executor.caller.requests.get", side_effect=[mock_429, mock_200]):
+            with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
+                result = caller.health_check()
+
+        assert result == {"status": "healthy"}
+        mock_sleep.assert_called_once_with(1)  # 2^0 = 1s backoff
+
+    def test_health_check_fails_after_max_retries_of_429(self):
+        """health_check fails with rate limit error after max retries of HTTP 429.
+        Validates: Requirement 8.6"""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080", audience="test-audience", max_retries=2
+        )
+        mock_429 = type("MockResp", (), {"status_code": 429, "text": "Too Many Requests"})()
+
+        with patch("call_remote_executor.caller.requests.get", return_value=mock_429):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.health_check()
+
+        assert exc_info.value.phase == "health_check"
+        assert "rate limited" in exc_info.value.message.lower()
+        assert "429" in exc_info.value.message
+
+
+class TestAttestRateLimiting:
+    """Unit tests for HTTP 429 rate limiting on /attest.
+    Validates: Requirement 11.13"""
+
+    def test_attest_retries_on_429_then_succeeds(self):
+        """attest retries on HTTP 429 and succeeds when next response is 200.
+        Validates: Requirement 11.13"""
+        import hashlib
+        import struct
+
+        caller = _make_caller()
+
+        # Build a valid composite key and attest response
+        x25519_pub = os.urandom(32)
+        mlkem_encap_key = os.urandom(1184)
+        composite_key = (
+            struct.pack(">I", len(x25519_pub)) + x25519_pub
+            + struct.pack(">I", len(mlkem_encap_key)) + mlkem_encap_key
+        )
+        fingerprint = hashlib.sha256(composite_key).digest()
+        fixed_nonce = "a1b2c3d4" * 8
+
+        payload = {
+            "module_id": "test-module",
+            "digest": "SHA384",
+            "timestamp": 1700000000000,
+            "pcrs": {0: b'\x00' * 48},
+            "certificate": b'\x00' * 32,
+            "cabundle": [b'\x00' * 32],
+            "nonce": fixed_nonce,
+            "public_key": fingerprint,
+        }
+        attest_response_data = {
+            "attestation_document": "dGVzdA==",
+            "server_public_key": base64.b64encode(composite_key).decode("ascii"),
+        }
+
+        mock_429 = type("MockResp", (), {"status_code": 429, "text": "Too Many Requests"})()
+        mock_200 = MagicMock()
+        mock_200.status_code = 200
+        mock_200.json.return_value = attest_response_data
+
+        with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
+            with patch("call_remote_executor.caller.requests.get", side_effect=[mock_429, mock_200]):
+                with patch("call_remote_executor.caller.time.sleep"):
+                    with patch.object(caller, "validate_attestation", return_value=payload):
+                        with patch.object(ClientEncryption, "derive_shared_key"):
+                            result = caller.attest()
+
+        assert result == composite_key
+
+    def test_attest_fails_after_max_retries_of_429(self):
+        """attest fails with rate limit error after max retries of HTTP 429.
+        Validates: Requirement 11.13"""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080", audience="test-audience", max_retries=2
+        )
+        mock_429 = type("MockResp", (), {"status_code": 429, "text": "Too Many Requests"})()
+
+        with patch("call_remote_executor.caller.requests.get", return_value=mock_429):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.attest()
+
+        assert exc_info.value.phase == "attest"
+        assert "rate limited" in exc_info.value.message.lower()
+        assert "429" in exc_info.value.message
+
+
+class TestExecuteRateLimiting:
+    """Unit tests for HTTP 429 rate limiting on /execute.
+    Validates: Requirement 3.17"""
+
+    def test_execute_retries_on_429_then_succeeds(self):
+        """execute retries on HTTP 429 and succeeds when next response is 200.
+        Validates: Requirement 3.17"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption_for_caller(caller)
+
+        encrypted_resp = server_enc.encrypt_payload({
+            "execution_id": "exec-1",
+            "attestation_document": "",
+            "status": "queued",
+        })
+
+        mock_429 = type("MockResp", (), {"status_code": 429, "text": "Too Many Requests"})()
+        mock_200 = MagicMock()
+        mock_200.status_code = 200
+        mock_200.json.return_value = {"encrypted_response": encrypted_resp}
+
+        with patch("call_remote_executor.caller.requests.post", side_effect=[mock_429, mock_200]):
+            with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
+                result = caller.execute(
+                    "https://github.com/o/r", "abc", "s.sh", "ghp_x"
+                )
+
+        assert result["execution_id"] == "exec-1"
+        mock_sleep.assert_called_once_with(1)
+
+    def test_execute_fails_after_max_retries_of_429(self):
+        """execute fails with rate limit error after max retries of HTTP 429.
+        Validates: Requirement 3.17"""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080", audience="test-audience", max_retries=2
+        )
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+
+        mock_429 = type("MockResp", (), {"status_code": 429, "text": "Too Many Requests"})()
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_429):
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.execute(
+                        "https://github.com/o/r", "abc", "s.sh", "ghp_x"
+                    )
+
+        assert exc_info.value.phase == "execute"
+        assert "rate limited" in exc_info.value.message.lower()
+        assert "429" in exc_info.value.message
+
+
+class TestExecuteHTTP413:
+    """Unit tests for HTTP 413 Payload Too Large on /execute.
+    Validates: Requirement 3.14"""
+
+    def test_execute_413_raises_caller_error_with_script_size_message(self):
+        """execute raises CallerError with script size error message on HTTP 413.
+        Validates: Requirement 3.14"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+
+        mock_resp = type("MockResp", (), {"status_code": 413, "text": "Payload Too Large"})()
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+
+        assert exc_info.value.phase == "execute"
+        assert "script" in exc_info.value.message.lower()
+        assert "maximum" in exc_info.value.message.lower() or "exceeds" in exc_info.value.message.lower()
+
+
+class TestExecuteHTTP503:
+    """Unit tests for HTTP 503 Service Unavailable on /execute.
+    Validates: Requirement 3.15"""
+
+    def test_execute_503_raises_caller_error_with_capacity_message(self):
+        """execute raises CallerError with server capacity error message on HTTP 503.
+        Validates: Requirement 3.15"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+
+        mock_resp = type("MockResp", (), {"status_code": 503, "text": "Service Unavailable"})()
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+
+        assert exc_info.value.phase == "execute"
+        assert "capacity" in exc_info.value.message.lower()
+
+
+class TestExecuteHTTP400DuplicateNonce:
+    """Unit tests for HTTP 400 duplicate nonce on /execute.
+    Validates: Requirement 3.16"""
+
+    def test_execute_400_duplicate_nonce_raises_caller_error(self):
+        """execute raises CallerError with duplicate nonce / anti-replay error on HTTP 400.
+        Validates: Requirement 3.16"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+
+        mock_resp = type("MockResp", (), {
+            "status_code": 400,
+            "text": "Nonce is a duplicate, replay detected",
+        })()
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+
+        assert exc_info.value.phase == "execute"
+        assert "nonce" in exc_info.value.message.lower()
+        assert "anti-replay" in exc_info.value.message.lower() or "duplicate" in exc_info.value.message.lower()
+
+
+class TestOutputTruncationHandling:
+    """Unit tests for output truncation handling.
+    Validates: Requirements 5.16, 5.17, 7.8"""
+
+    def _setup_caller_with_encryption(self):
+        caller = _make_caller()
+        caller._oidc_token = "test-oidc-token"
+        server_enc = _setup_encryption_for_caller(caller)
+        return caller, server_enc
+
+    def _make_encrypted_response(self, server_enc, payload_dict):
+        encrypted_resp = server_enc.encrypt_payload(payload_dict)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+        return mock_resp
+
+    def test_poll_output_logs_warning_when_truncated(self):
+        """poll_output logs warning when decrypted response contains truncated: true.
+        Validates: Requirement 5.16"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "partial output",
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+            "truncated": True,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.logger") as mock_logger:
+                result = caller.poll_output("exec-1")
+
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("truncated" in c.lower() for c in warning_calls), (
+            f"Expected warning about truncation, got: {warning_calls}"
+        )
+
+    def test_poll_output_records_truncation_status(self):
+        """poll_output records truncation status from most recent poll response.
+        Validates: Requirement 5.17"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "stdout": "output",
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+            "truncated": True,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("exec-1")
+
+        assert result["truncated"] is True
+
+    def test_generate_summary_includes_truncation_warning(self):
+        """Job summary includes truncation warning when output was truncated.
+        Validates: Requirement 7.8"""
+        caller = _make_caller()
+        summary = caller._generate_summary(
+            stdout="some output",
+            stderr="",
+            exit_code=0,
+            attestation_status="pass",
+            output_integrity_status="pass",
+            truncated=True,
+        )
+        assert "truncated" in summary.lower()
+        assert "⚠️" in summary
+
+    def test_generate_summary_no_truncation_warning_when_not_truncated(self):
+        """Job summary does not include truncation warning when output was not truncated.
+        Validates: Requirement 7.8"""
+        caller = _make_caller()
+        summary = caller._generate_summary(
+            stdout="some output",
+            stderr="",
+            exit_code=0,
+            attestation_status="pass",
+            output_integrity_status="pass",
+            truncated=False,
+        )
+        assert "⚠️" not in summary
+
+
+class TestUpdatedHTTP403ErrorMessages:
+    """Unit tests for updated HTTP 403 error messages.
+    Validates: Requirement 10.7"""
+
+    def test_execute_403_mentions_oidc_repository_claim(self):
+        """execute HTTP 403 error message mentions OIDC repository claim.
+        Validates: Requirement 10.7"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+
+        mock_resp = type("MockResp", (), {"status_code": 403, "text": "Forbidden"})()
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+
+        msg = exc_info.value.message.lower()
+        assert "not authorized" in msg
+        assert "oidc" in msg
+        assert "repository" in msg
+
+    def test_poll_output_403_mentions_oidc_repository_claim(self):
+        """poll_output HTTP 403 error message mentions OIDC repository claim.
+        Validates: Requirement 10.7"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+
+        mock_resp = type("MockResp", (), {"status_code": 403, "text": "Forbidden"})()
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("exec-1")
+
+        msg = exc_info.value.message.lower()
+        assert "not authorized" in msg
+        assert "oidc" in msg
+        assert "repository" in msg
+
+
+class TestSimplifiedHealthCheckResponse:
+    """Unit tests for simplified health check response.
+    Validates: Requirement 8.2"""
+
+    def test_health_check_accepts_minimal_healthy_response(self):
+        """health_check accepts {"status": "healthy"} with no other fields.
+        Validates: Requirement 8.2"""
+        caller = _make_caller()
+
+        with patch("call_remote_executor.caller.requests.get") as mock_get:
+            mock_resp = mock_get.return_value
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"status": "healthy"}
+            result = caller.health_check()
+
+        assert result == {"status": "healthy"}

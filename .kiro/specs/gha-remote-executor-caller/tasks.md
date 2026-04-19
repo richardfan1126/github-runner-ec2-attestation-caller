@@ -1254,56 +1254,56 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify retry delays follow an exponential backoff pattern
     - **Validates: Requirements 3.17, 8.6, 11.13**
 
-- [ ] 73. Write unit tests for rate limiting, new error codes, truncation, and HTTP 403 updates
-  - [ ] 73.1 Write unit tests for HTTP 429 rate limiting on `/health`
+- [x] 73. Write unit tests for rate limiting, new error codes, truncation, and HTTP 403 updates
+  - [x] 73.1 Write unit tests for HTTP 429 rate limiting on `/health`
     - Test health_check retries on HTTP 429 and succeeds when next response is 200 (Req 8.6)
     - Test health_check fails with rate limit error after max retries of HTTP 429 (Req 8.6)
     - _Requirements: 8.6_
 
-  - [ ] 73.2 Write unit tests for HTTP 429 rate limiting on `/attest`
+  - [x] 73.2 Write unit tests for HTTP 429 rate limiting on `/attest`
     - Test attest retries on HTTP 429 and succeeds when next response is 200 (Req 11.13)
     - Test attest fails with rate limit error after max retries of HTTP 429 (Req 11.13)
     - _Requirements: 11.13_
 
-  - [ ] 73.3 Write unit tests for HTTP 429 rate limiting on `/execute`
+  - [x] 73.3 Write unit tests for HTTP 429 rate limiting on `/execute`
     - Test execute retries on HTTP 429 and succeeds when next response is 200 (Req 3.17)
     - Test execute fails with rate limit error after max retries of HTTP 429 (Req 3.17)
     - _Requirements: 3.17_
 
-  - [ ] 73.4 Write unit tests for HTTP 413 Payload Too Large on `/execute`
+  - [x] 73.4 Write unit tests for HTTP 413 Payload Too Large on `/execute`
     - Test execute raises `CallerError` with script size error message on HTTP 413 (Req 3.14)
     - _Requirements: 3.14_
 
-  - [ ] 73.5 Write unit tests for HTTP 503 Service Unavailable on `/execute`
+  - [x] 73.5 Write unit tests for HTTP 503 Service Unavailable on `/execute`
     - Test execute raises `CallerError` with server capacity error message on HTTP 503 (Req 3.15)
     - _Requirements: 3.15_
 
-  - [ ] 73.6 Write unit tests for HTTP 400 duplicate nonce on `/execute`
+  - [x] 73.6 Write unit tests for HTTP 400 duplicate nonce on `/execute`
     - Test execute raises `CallerError` with duplicate nonce / anti-replay error message on HTTP 400 (Req 3.16)
     - _Requirements: 3.16_
 
-  - [ ] 73.7 Write unit tests for output truncation handling
+  - [x] 73.7 Write unit tests for output truncation handling
     - Test poll_output logs warning when decrypted response contains `truncated: true` (Req 5.16)
     - Test poll_output records truncation status from most recent poll response (Req 5.17)
     - Test job summary includes truncation warning when output was truncated (Req 7.8)
     - _Requirements: 5.16, 5.17, 7.8_
 
-  - [ ] 73.8 Write unit tests for updated HTTP 403 error messages
+  - [x] 73.8 Write unit tests for updated HTTP 403 error messages
     - Test execute HTTP 403 error message mentions "repository is not authorized or the OIDC repository claim does not match the requested repository_url" (Req 10.7)
     - Test poll_output HTTP 403 error message mentions "repository is not authorized or the OIDC repository claim does not match the requested repository_url" (Req 10.7)
     - _Requirements: 10.7_
 
-  - [ ] 73.9 Write unit test for simplified health check response
+  - [x] 73.9 Write unit test for simplified health check response
     - Test health_check accepts `{"status": "healthy"}` with no other fields (Req 8.2)
     - _Requirements: 8.2_
 
-  - [ ] 73.10 Update existing unit tests for compatibility with new error handling
+  - [x] 73.10 Update existing unit tests for compatibility with new error handling
     - Update any existing tests that assert on HTTP 403 error messages to match the new wording
     - Update any existing tests that reference the old health check response shape
     - Remove or update any references to `/metrics` endpoint in tests if present
     - _Requirements: 8.2, 10.7_
 
-- [ ] 74. Final checkpoint - Ensure all server-side security hardening tests pass
+- [x] 74. Final checkpoint - Ensure all server-side security hardening tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
