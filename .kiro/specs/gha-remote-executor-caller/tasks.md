@@ -1306,22 +1306,22 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 74. Final checkpoint - Ensure all server-side security hardening tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 75. Rewrite certificate chain validation for trust-anchor-only PKI model
-  - [ ] 75.1 Rewrite `verify_certificate_chain()` in `attestation.py` to use untrusted intermediates
+- [x] 75. Rewrite certificate chain validation for trust-anchor-only PKI model
+  - [x] 75.1 Rewrite `verify_certificate_chain()` in `attestation.py` to use untrusted intermediates
     - Construct an `X509Store` containing ONLY the pinned `root_cert_pem` as the trust anchor
     - Pass all `cabundle` entries as untrusted intermediates to `X509StoreContext` rather than adding them to the store via `store.add_cert()`
     - Use the `X509StoreContext(store, signing_cert, chain=untrusted_intermediates)` constructor form
     - This prevents a malicious server from injecting its own CA into the cabundle to forge attestations
     - _Requirements: 4B.9, 4B.13_
 
-  - [ ] 75.2 Write property test for trust-anchor-only certificate chain validation
+  - [x] 75.2 Write property test for trust-anchor-only certificate chain validation
     - **Property 12: Certificate chain validation with trust-anchor-only model**
     - Generate a test signing certificate chained through intermediates to the pinned root — verify it passes
     - Generate a signing certificate chained to a non-pinned CA included in the cabundle — verify it is rejected
     - Verify that cabundle entries are NOT treated as trust anchors
     - **Validates: Requirements 4B.9, 4B.13**
 
-  - [ ] 75.3 Write unit tests for trust-anchor-only PKI model
+  - [x] 75.3 Write unit tests for trust-anchor-only PKI model
     - Test that a certificate chained to a non-pinned CA in cabundle is rejected even when that CA is in the cabundle (regression test for Finding 1)
     - Test that a certificate properly chained through cabundle intermediates to the pinned root passes
     - _Requirements: 4B.9, 4B.12_

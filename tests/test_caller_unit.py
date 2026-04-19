@@ -286,6 +286,122 @@ class TestCOSESign1EdgeCases:
         assert "mismatch" in exc_info.value.message.lower()
 
 
+class TestTrustAnchorOnlyPKI:
+    """Unit tests for trust-anchor-only PKI model (regression tests for Finding 1).
+    Validates: Requirements 4B.9, 4B.12"""
+
+    def test_rogue_ca_in_cabundle_rejected(self):
+        """A cert chained to a non-pinned CA in cabundle is rejected even when that CA is in the cabundle.
+        This is the regression test for Finding 1: the old code added cabundle entries to the trust store.
+        Validates: Requirement 4B.9"""
+        from call_remote_executor import attestation
+
+        # Pinned root CA
+        root_key = ec.generate_private_key(ec.SECP384R1())
+        root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Pinned Root")])
+        root_cert = (
+            x509.CertificateBuilder()
+            .subject_name(root_name)
+            .issuer_name(root_name)
+            .public_key(root_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(root_key, hashes.SHA384())
+        )
+        root_pem = root_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+        # Rogue CA — self-signed, NOT the pinned root
+        rogue_key = ec.generate_private_key(ec.SECP384R1())
+        rogue_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rogue CA")])
+        rogue_cert = (
+            x509.CertificateBuilder()
+            .subject_name(rogue_name)
+            .issuer_name(rogue_name)
+            .public_key(rogue_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(rogue_key, hashes.SHA384())
+        )
+        rogue_der = rogue_cert.public_bytes(serialization.Encoding.DER)
+
+        # Signing cert chained to the rogue CA
+        sign_key = ec.generate_private_key(ec.SECP384R1())
+        sign_cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rogue Signer")]))
+            .issuer_name(rogue_name)
+            .public_key(sign_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .sign(rogue_key, hashes.SHA384())
+        )
+        sign_cert_der = sign_cert.public_bytes(serialization.Encoding.DER)
+
+        # Rogue CA is in cabundle but NOT the pinned root — MUST be rejected
+        with pytest.raises(CallerError) as exc_info:
+            attestation.verify_certificate_chain(sign_cert_der, [rogue_der], root_pem)
+        assert exc_info.value.phase == "attestation"
+
+    def test_valid_chain_through_intermediate_passes(self):
+        """A cert properly chained through cabundle intermediates to the pinned root passes.
+        Validates: Requirement 4B.9"""
+        from call_remote_executor import attestation
+
+        # Root CA (pinned)
+        root_key = ec.generate_private_key(ec.SECP384R1())
+        root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Pinned Root")])
+        root_cert = (
+            x509.CertificateBuilder()
+            .subject_name(root_name)
+            .issuer_name(root_name)
+            .public_key(root_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(root_key, hashes.SHA384())
+        )
+        root_pem = root_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+        # Intermediate CA signed by root
+        inter_key = ec.generate_private_key(ec.SECP384R1())
+        inter_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Intermediate CA")])
+        inter_cert = (
+            x509.CertificateBuilder()
+            .subject_name(inter_name)
+            .issuer_name(root_name)
+            .public_key(inter_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .sign(root_key, hashes.SHA384())
+        )
+        inter_der = inter_cert.public_bytes(serialization.Encoding.DER)
+
+        # Signing cert signed by intermediate
+        sign_key = ec.generate_private_key(ec.SECP384R1())
+        sign_cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Valid Signer")]))
+            .issuer_name(inter_name)
+            .public_key(sign_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .sign(inter_key, hashes.SHA384())
+        )
+        sign_cert_der = sign_cert.public_bytes(serialization.Encoding.DER)
+
+        # Should NOT raise — intermediate in cabundle, root is pinned
+        attestation.verify_certificate_chain(sign_cert_der, [inter_der], root_pem)
+
+
 class TestHealthCheckAndExecuteEdgeCases:
     """Unit tests for health check and execute connection error edge cases."""
 

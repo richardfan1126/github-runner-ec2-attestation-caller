@@ -489,29 +489,78 @@ class TestPCRValidation:
 
 
 # ---------------------------------------------------------------------------
-# Property 12: Certificate chain validation rejects untrusted certs
+# Property 12: Certificate chain validation with trust-anchor-only model
 # ---------------------------------------------------------------------------
 
-# Feature: gha-remote-executor-caller, Property 12: Certificate chain validation rejects untrusted certificates
-# **Validates: Requirements 4B.8, 4B.11, 4B.12**
+# Feature: gha-remote-executor-caller, Property 12: Certificate chain validation rejects untrusted certificates (trust-anchor-only model)
+# **Validates: Requirements 4B.9, 4B.13**
 class TestCertificateChainValidation:
-    """Property 12: Certificate chain validation rejects untrusted certificates."""
+    """Property 12: Certificate chain validation with trust-anchor-only model.
 
-    def test_valid_chain_accepted(self):
-        """A certificate properly chained to the root CA should pass validation."""
+    Verifies that only the pinned root cert is a trust anchor and cabundle
+    entries are treated as untrusted intermediates.
+    """
+
+    def test_valid_chain_through_intermediate_accepted(self):
+        """A certificate chained through cabundle intermediates to the pinned root passes."""
+        # Root CA (pinned) → Intermediate CA → Signing Cert
+        root_key = ec.generate_private_key(ec.SECP384R1())
+        root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Pinned Root CA")])
+        root_cert = (
+            x509.CertificateBuilder()
+            .subject_name(root_name)
+            .issuer_name(root_name)
+            .public_key(root_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(root_key, hashes.SHA384())
+        )
+        root_pem = root_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+        # Intermediate CA signed by root
+        inter_key = ec.generate_private_key(ec.SECP384R1())
+        inter_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Intermediate CA")])
+        inter_cert = (
+            x509.CertificateBuilder()
+            .subject_name(inter_name)
+            .issuer_name(root_name)
+            .public_key(inter_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .sign(root_key, hashes.SHA384())
+        )
+        inter_der = inter_cert.public_bytes(serialization.Encoding.DER)
+
+        # Signing cert signed by intermediate
+        sign_key = ec.generate_private_key(ec.SECP384R1())
+        sign_cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Signer")]))
+            .issuer_name(inter_name)
+            .public_key(sign_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .sign(inter_key, hashes.SHA384())
+        )
+        sign_cert_der = sign_cert.public_bytes(serialization.Encoding.DER)
+
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
-            root_cert_pem=_TEST_CA_PEM,
+            root_cert_pem=root_pem,
             audience="test-audience",
         )
-        # Should not raise
-        caller._verify_certificate_chain(_TEST_SIGN_CERT_DER, [_TEST_CA_DER])
+        # Should not raise — intermediate is in cabundle, root is pinned
+        caller._verify_certificate_chain(sign_cert_der, [inter_der])
 
     @given(data=st.data())
     @settings(max_examples=20)
     def test_untrusted_cert_rejected(self, data):
         """A certificate not chained to the configured root CA should fail validation."""
-        # Generate a completely different CA
         other_ca_key = ec.generate_private_key(ec.SECP384R1())
         other_ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Other CA")])
         other_ca_cert = (
@@ -527,8 +576,6 @@ class TestCertificateChainValidation:
         )
         other_ca_pem = other_ca_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-        # Use the test signing cert (signed by _TEST_CA) but verify against the other CA.
-        # Pass an empty cabundle so the real issuer (_TEST_CA) is NOT in the store.
         caller = RemoteExecutorCaller(
             server_url="http://localhost:8080",
             root_cert_pem=other_ca_pem,
@@ -536,6 +583,71 @@ class TestCertificateChainValidation:
         )
         with pytest.raises(CallerError) as exc_info:
             caller._verify_certificate_chain(_TEST_SIGN_CERT_DER, [])
+        assert exc_info.value.phase == "attestation"
+
+    @given(data=st.data())
+    @settings(max_examples=20)
+    def test_rogue_ca_in_cabundle_rejected(self, data):
+        """A cert chained to a non-pinned CA in the cabundle is rejected (trust-anchor-only).
+
+        This is the key regression test: the old code added all cabundle entries
+        to the trust store, so a rogue CA in the cabundle would have been trusted.
+        The new code passes cabundle entries as untrusted intermediates only.
+        """
+        # Pinned root CA
+        pinned_root_key = ec.generate_private_key(ec.SECP384R1())
+        pinned_root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Pinned Root")])
+        pinned_root_cert = (
+            x509.CertificateBuilder()
+            .subject_name(pinned_root_name)
+            .issuer_name(pinned_root_name)
+            .public_key(pinned_root_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(pinned_root_key, hashes.SHA384())
+        )
+        pinned_root_pem = pinned_root_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+        # Rogue CA — NOT the pinned root, but will be included in cabundle
+        rogue_ca_key = ec.generate_private_key(ec.SECP384R1())
+        rogue_ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rogue CA")])
+        rogue_ca_cert = (
+            x509.CertificateBuilder()
+            .subject_name(rogue_ca_name)
+            .issuer_name(rogue_ca_name)
+            .public_key(rogue_ca_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(rogue_ca_key, hashes.SHA384())
+        )
+        rogue_ca_der = rogue_ca_cert.public_bytes(serialization.Encoding.DER)
+
+        # Signing cert chained to the ROGUE CA (not the pinned root)
+        sign_key = ec.generate_private_key(ec.SECP384R1())
+        sign_cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rogue Signer")]))
+            .issuer_name(rogue_ca_name)
+            .public_key(sign_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc))
+            .sign(rogue_ca_key, hashes.SHA384())
+        )
+        sign_cert_der = sign_cert.public_bytes(serialization.Encoding.DER)
+
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem=pinned_root_pem,
+            audience="test-audience",
+        )
+        # Rogue CA is in cabundle but NOT the pinned root — must be REJECTED
+        with pytest.raises(CallerError) as exc_info:
+            caller._verify_certificate_chain(sign_cert_der, [rogue_ca_der])
         assert exc_info.value.phase == "attestation"
 
 

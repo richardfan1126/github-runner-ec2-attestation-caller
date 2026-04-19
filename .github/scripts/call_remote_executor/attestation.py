@@ -82,16 +82,19 @@ def verify_certificate_chain(cert_der: bytes, cabundle: list[bytes], root_cert_p
 
     try:
         store = ossl_crypto.X509Store()
-        # Add the trusted root certificate from the provided PEM
+        # ONLY the pinned root certificate is a trust anchor
         store.add_cert(ossl_crypto.load_certificate(ossl_crypto.FILETYPE_PEM, root_cert_pem))
 
-        # Add all certificates from the CA bundle as intermediates.
-        # cabundle[0] is the root from the document; the remaining are intermediates.
-        for der_cert in cabundle:
-            store.add_cert(ossl_crypto.load_certificate(ossl_crypto.FILETYPE_ASN1, der_cert))
+        # All cabundle entries are passed as UNTRUSTED intermediates —
+        # they are NOT added to the trust store, preventing a malicious server
+        # from injecting its own CA into the cabundle to forge attestations.
+        untrusted_intermediates = [
+            ossl_crypto.load_certificate(ossl_crypto.FILETYPE_ASN1, der_cert)
+            for der_cert in cabundle
+        ]
 
         signing_cert = ossl_crypto.load_certificate(ossl_crypto.FILETYPE_ASN1, cert_der)
-        store_ctx = ossl_crypto.X509StoreContext(store, signing_cert)
+        store_ctx = ossl_crypto.X509StoreContext(store, signing_cert, chain=untrusted_intermediates)
         store_ctx.verify_certificate()
     except Exception as exc:
         if isinstance(exc, CallerError):
