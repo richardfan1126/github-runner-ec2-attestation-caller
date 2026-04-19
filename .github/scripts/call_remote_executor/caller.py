@@ -105,6 +105,52 @@ class RemoteExecutorCaller:
 
     # ---- HTTP methods ----
 
+    def _request_with_retry(self, method: str, url: str, *, phase: str = "", **kwargs) -> requests.Response:
+        """Make an HTTP request with retry on HTTP 429 (rate limiting).
+
+        Wraps requests.get/post with exponential backoff on 429 responses.
+        Retries up to self.max_retries times with delays of 1s, 2s, 4s, ...
+        On success (non-429), returns the response.
+        On exhausted retries, raises CallerError with rate limit message.
+        On connection/request errors, raises CallerError immediately.
+        """
+        request_fn = {"GET": requests.get, "POST": requests.post}.get(
+            method.upper(), lambda url, **kw: requests.request(method, url, **kw)
+        )
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = request_fn(url, **kwargs)
+            except requests.ConnectionError as exc:
+                raise CallerError(
+                    message=f"Failed to connect to server: {exc}",
+                    phase=phase,
+                    details={"url": url, "error": str(exc)},
+                )
+            except requests.RequestException as exc:
+                raise CallerError(
+                    message=f"Request failed: {exc}",
+                    phase=phase,
+                    details={"url": url, "error": str(exc)},
+                )
+
+            if response.status_code != 429:
+                return response
+
+            if attempt < self.max_retries:
+                delay = 2 ** attempt
+                logger.warning(
+                    "Rate limited (HTTP 429) on %s %s, retrying in %ds (attempt %d/%d)",
+                    method, url, delay, attempt + 1, self.max_retries,
+                )
+                time.sleep(delay)
+
+        raise CallerError(
+            message=f"Rate limited: server returned HTTP 429 after {self.max_retries} retries",
+            phase=phase,
+            details={"url": url, "status_code": 429, "retries_exhausted": self.max_retries},
+        )
+
     def request_oidc_token(self) -> str:
         """Request an OIDC token from GitHub's OIDC provider.
 
@@ -167,20 +213,7 @@ class RemoteExecutorCaller:
         Raises CallerError if unhealthy or unreachable.
         """
         url = f"{self.server_url}/health"
-        try:
-            response = requests.get(url, timeout=self.timeout)
-        except requests.ConnectionError as exc:
-            raise CallerError(
-                message=f"Failed to connect to server health endpoint: {exc}",
-                phase="health_check",
-                details={"url": url, "error": str(exc)},
-            )
-        except requests.RequestException as exc:
-            raise CallerError(
-                message=f"Health check request failed: {exc}",
-                phase="health_check",
-                details={"url": url, "error": str(exc)},
-            )
+        response = self._request_with_retry("GET", url, phase="health_check", timeout=self.timeout)
 
         if response.status_code != 200:
             raise CallerError(
@@ -219,20 +252,7 @@ class RemoteExecutorCaller:
         """
         nonce = self.generate_nonce()
         url = f"{self.server_url}/attest"
-        try:
-            response = requests.get(url, params={"nonce": nonce}, timeout=self.timeout)
-        except requests.ConnectionError as exc:
-            raise CallerError(
-                message=f"Failed to connect to server attest endpoint: {exc}",
-                phase="attest",
-                details={"url": url, "error": str(exc)},
-            )
-        except requests.RequestException as exc:
-            raise CallerError(
-                message=f"Attest request failed: {exc}",
-                phase="attest",
-                details={"url": url, "error": str(exc)},
-            )
+        response = self._request_with_retry("GET", url, phase="attest", params={"nonce": nonce}, timeout=self.timeout)
 
         if response.status_code != 200:
             raise CallerError(
@@ -340,20 +360,7 @@ class RemoteExecutorCaller:
             "client_public_key": client_public_key_b64,
         }
 
-        try:
-            response = requests.post(url, json=envelope, timeout=self.timeout)
-        except requests.ConnectionError as exc:
-            raise CallerError(
-                message=f"Failed to connect to server execute endpoint: {exc}",
-                phase="execute",
-                details={"url": url, "error": str(exc)},
-            )
-        except requests.RequestException as exc:
-            raise CallerError(
-                message=f"Execute request failed: {exc}",
-                phase="execute",
-                details={"url": url, "error": str(exc)},
-            )
+        response = self._request_with_retry("POST", url, phase="execute", json=envelope, timeout=self.timeout)
 
         if response.status_code == 401:
             raise CallerError(

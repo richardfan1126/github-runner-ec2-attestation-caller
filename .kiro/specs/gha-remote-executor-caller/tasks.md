@@ -1179,25 +1179,25 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 65. Final checkpoint - Ensure all attestation artifact tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 66. Implement rate limiting retry with exponential backoff
-  - [ ] 66.1 Add `_request_with_retry` helper method to `RemoteExecutorCaller` in `caller.py`
+- [x] 66. Implement rate limiting retry with exponential backoff
+  - [x] 66.1 Add `_request_with_retry` helper method to `RemoteExecutorCaller` in `caller.py`
     - Implement a private method `_request_with_retry(self, method, url, **kwargs)` that wraps `requests.request`
     - On HTTP 429 response, retry with exponential backoff (e.g., 1s, 2s, 4s, ...) up to `self.max_retries` attempts
     - On success (non-429) or after exhausting retries, return the response or raise `CallerError` with a rate limit error message
     - Accept an optional `phase` parameter for error reporting
     - _Requirements: 3.17, 8.6, 11.13_
 
-  - [ ] 66.2 Update `health_check` in `caller.py` to use `_request_with_retry`
+  - [x] 66.2 Update `health_check` in `caller.py` to use `_request_with_retry`
     - Replace the direct `requests.get` call with `_request_with_retry("GET", ...)` so that HTTP 429 responses trigger retry with exponential backoff
     - Raise `CallerError(phase="health_check")` with rate limit error if retries are exhausted
     - _Requirements: 8.6_
 
-  - [ ] 66.3 Update `attest` in `caller.py` to use `_request_with_retry`
+  - [x] 66.3 Update `attest` in `caller.py` to use `_request_with_retry`
     - Replace the direct `requests.get` call with `_request_with_retry("GET", ...)` so that HTTP 429 responses trigger retry with exponential backoff
     - Raise `CallerError(phase="attest")` with rate limit error if retries are exhausted
     - _Requirements: 11.13_
 
-  - [ ] 66.4 Update `execute` in `caller.py` to use `_request_with_retry`
+  - [x] 66.4 Update `execute` in `caller.py` to use `_request_with_retry`
     - Replace the direct `requests.post` call with `_request_with_retry("POST", ...)` so that HTTP 429 responses trigger retry with exponential backoff
     - Raise `CallerError(phase="execute")` with rate limit error if retries are exhausted
     - _Requirements: 3.17_

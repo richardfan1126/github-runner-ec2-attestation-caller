@@ -330,14 +330,15 @@ class TestHealthCheckAcceptance:
         mock_response.text = f'{{"status": "{status_value}"}}'
 
         with patch("call_remote_executor.caller.requests.get", return_value=mock_response):
-            if status_code == 200 and status_value == "healthy":
-                result = caller.health_check()
-                assert isinstance(result, dict)
-                assert result["status"] == "healthy"
-            else:
-                with pytest.raises(CallerError) as exc_info:
-                    caller.health_check()
-                assert exc_info.value.phase == "health_check"
+            with patch("call_remote_executor.caller.time.sleep"):
+                if status_code == 200 and status_value == "healthy":
+                    result = caller.health_check()
+                    assert isinstance(result, dict)
+                    assert result["status"] == "healthy"
+                else:
+                    with pytest.raises(CallerError) as exc_info:
+                        caller.health_check()
+                    assert exc_info.value.phase == "health_check"
 
 
 # ---------------------------------------------------------------------------
@@ -364,15 +365,16 @@ class TestExecuteHTTPErrorPropagation:
         mock_response.text = response_body
 
         with patch("call_remote_executor.caller.requests.post", return_value=mock_response):
-            with pytest.raises(CallerError) as exc_info:
-                caller.execute(
-                    repository_url="https://github.com/owner/repo",
-                    commit_hash="abc123",
-                    script_path="scripts/sample-build.sh",
-                    github_token="ghp_test_token",
-                )
-            assert exc_info.value.phase == "execute"
-            assert exc_info.value.details["status_code"] == status_code
+            with patch("call_remote_executor.caller.time.sleep"):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.execute(
+                        repository_url="https://github.com/owner/repo",
+                        commit_hash="abc123",
+                        script_path="scripts/sample-build.sh",
+                        github_token="ghp_test_token",
+                    )
+                assert exc_info.value.phase == "execute"
+                assert exc_info.value.details["status_code"] == status_code
 
 
 # ---------------------------------------------------------------------------
