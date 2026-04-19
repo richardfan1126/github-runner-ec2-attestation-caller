@@ -1306,6 +1306,290 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 74. Final checkpoint - Ensure all server-side security hardening tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 75. Rewrite certificate chain validation for trust-anchor-only PKI model
+  - [ ] 75.1 Rewrite `verify_certificate_chain()` in `attestation.py` to use untrusted intermediates
+    - Construct an `X509Store` containing ONLY the pinned `root_cert_pem` as the trust anchor
+    - Pass all `cabundle` entries as untrusted intermediates to `X509StoreContext` rather than adding them to the store via `store.add_cert()`
+    - Use the `X509StoreContext(store, signing_cert, chain=untrusted_intermediates)` constructor form
+    - This prevents a malicious server from injecting its own CA into the cabundle to forge attestations
+    - _Requirements: 4B.9, 4B.13_
+
+  - [ ] 75.2 Write property test for trust-anchor-only certificate chain validation
+    - **Property 12: Certificate chain validation with trust-anchor-only model**
+    - Generate a test signing certificate chained through intermediates to the pinned root — verify it passes
+    - Generate a signing certificate chained to a non-pinned CA included in the cabundle — verify it is rejected
+    - Verify that cabundle entries are NOT treated as trust anchors
+    - **Validates: Requirements 4B.9, 4B.13**
+
+  - [ ] 75.3 Write unit tests for trust-anchor-only PKI model
+    - Test that a certificate chained to a non-pinned CA in cabundle is rejected even when that CA is in the cabundle (regression test for Finding 1)
+    - Test that a certificate properly chained through cabundle intermediates to the pinned root passes
+    - _Requirements: 4B.9, 4B.12_
+
+- [ ] 76. Make `root_cert_pem` and `expected_pcrs` mandatory on `RemoteExecutorCaller`
+  - [ ] 76.1 Update `RemoteExecutorCaller.__init__` in `caller.py` to require attestation parameters
+    - Remove default values for `root_cert_pem` (was `""`) and `expected_pcrs` (was `None`)
+    - Make both parameters positional-required or keyword-required with no defaults
+    - Raise `CallerError` in `__init__` if `root_cert_pem` is empty/falsy or `expected_pcrs` is None/empty
+    - _Requirements: 4B.13_
+
+  - [ ] 76.2 Update all existing tests that construct `RemoteExecutorCaller` with empty/None attestation params
+    - Ensure all test constructors provide valid `root_cert_pem` and `expected_pcrs` values
+    - _Requirements: 4B.13_
+
+  - [ ] 76.3 Write property test for mandatory attestation parameters
+    - **Property 43: Mandatory attestation parameters**
+    - Attempt to construct `RemoteExecutorCaller` with empty `root_cert_pem` — verify error raised
+    - Attempt to construct with `None` `expected_pcrs` — verify error raised
+    - Attempt to construct with empty dict `expected_pcrs` — verify error raised
+    - Construct with valid values — verify no error
+    - **Validates: Requirements 4B.13**
+
+  - [ ] 76.4 Write unit tests for mandatory attestation parameter validation
+    - Test empty `root_cert_pem` raises `CallerError` at construction time
+    - Test `None` `expected_pcrs` raises `CallerError` at construction time
+    - Test empty dict `expected_pcrs` raises `CallerError` at construction time
+    - _Requirements: 4B.13_
+
+- [ ] 77. Checkpoint - Ensure PKI trust model and mandatory params tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 78. Implement mandatory execution-acceptance attestation with request binding
+  - [ ] 78.1 Update `execute()` in `caller.py` to fail on missing attestation
+    - After decrypting the `/execute` response, check if `attestation_document` is missing or empty
+    - If missing/empty, raise `CallerError(phase="execute")` indicating execution-acceptance attestation is missing
+    - Remove the existing conditional `if attestation_b64:` guard — attestation is now mandatory
+    - _Requirements: 3.8_
+
+  - [ ] 78.2 Implement request binding verification in `execute()` in `caller.py`
+    - After validating the execution-acceptance attestation, parse the `user_data` field from the validated attestation payload
+    - Decode `user_data` (bytes → string → JSON) to extract attested `repository_url`, `commit_hash`, and `script_path`
+    - Compare each attested field against the values the caller sent in the execution request
+    - Raise `CallerError(phase="execute")` if any attested field does not match the sent request values
+    - _Requirements: 3.9_
+
+  - [ ] 78.3 Write property test for mandatory execution-acceptance attestation with request binding
+    - **Property 35: Mandatory execution-acceptance attestation with request binding**
+    - Test that missing `attestation_document` in decrypted response raises `CallerError`
+    - Test that empty `attestation_document` raises `CallerError`
+    - Test that attested `repository_url`, `commit_hash`, `script_path` matching sent values passes
+    - Test that any mismatched attested field raises `CallerError`
+    - **Validates: Requirements 3.8, 3.9**
+
+  - [ ] 78.4 Write unit tests for execution-acceptance attestation and request binding
+    - Test missing `attestation_document` key raises `CallerError` with phase "execute"
+    - Test empty string `attestation_document` raises `CallerError` with phase "execute"
+    - Test attested `repository_url` mismatch raises `CallerError`
+    - Test attested `commit_hash` mismatch raises `CallerError`
+    - Test attested `script_path` mismatch raises `CallerError`
+    - Test all attested fields matching passes without error
+    - _Requirements: 3.8, 3.9_
+
+- [ ] 79. Implement exit code validation on completion
+  - [ ] 79.1 Update `poll_output()` in `caller.py` to validate `exit_code` type on completion
+    - When `complete=true`, verify that `exit_code` is a concrete integer (using `isinstance(exit_code, int)` and `not isinstance(exit_code, bool)`)
+    - If `exit_code` is `None`, a string, a float, a bool, or any non-integer type, raise `CallerError(phase="polling")` indicating a protocol error
+    - _Requirements: 5.12_
+
+  - [ ] 79.2 Write property test for exit code validation on completion
+    - **Property 36: Exit code validation on completion**
+    - Generate random integer exit codes — verify `poll_output` accepts them
+    - Test `exit_code=None` on `complete=true` raises `CallerError`
+    - Test `exit_code="0"` (string) raises `CallerError`
+    - Test `exit_code=0.0` (float) raises `CallerError`
+    - Test `exit_code=True` (bool) raises `CallerError`
+    - **Validates: Requirements 5.12**
+
+  - [ ] 79.3 Write unit tests for exit code validation
+    - Test `complete=true` with `exit_code=None` raises `CallerError` with protocol error message
+    - Test `complete=true` with `exit_code=0` (int) succeeds
+    - Test `complete=true` with `exit_code="0"` (string) raises `CallerError`
+    - _Requirements: 5.12_
+
+- [ ] 80. Implement fail-closed output attestation on final poll
+  - [ ] 80.1 Update `RemoteExecutorCaller.__init__` to accept `allow_missing_output_attestation` parameter
+    - Add `allow_missing_output_attestation: bool = False` parameter
+    - Store as instance attribute
+    - _Requirements: 5.13, 5.14_
+
+  - [ ] 80.2 Update `poll_output()` in `caller.py` for fail-closed output attestation
+    - When `complete=true` and the final poll response does not contain a valid `output_attestation_document` (null or missing):
+      - If `allow_missing_output_attestation` is `False` (default), raise `CallerError(phase="polling")` indicating output attestation is missing
+      - If `allow_missing_output_attestation` is `True`, log a warning and continue returning the result
+    - When the final poll response does contain a valid output attestation, validate it normally regardless of the flag
+    - _Requirements: 5.13, 5.14_
+
+  - [ ] 80.3 Update `cli.py` to add `--allow-missing-output-attestation` CLI flag
+    - Add `--allow-missing-output-attestation` as a boolean flag (store_true) to argparse
+    - Pass the value to `RemoteExecutorCaller.__init__`
+    - _Requirements: 5.14_
+
+  - [ ] 80.4 Update workflow YAML caller invocations if needed
+    - Verify existing workflow invocations do NOT pass `--allow-missing-output-attestation` (fail-closed by default)
+    - _Requirements: 5.13_
+
+  - [ ] 80.5 Write property test for fail-closed output attestation on final poll
+    - **Property 37: Fail-closed output attestation on final poll**
+    - Test `complete=true` with no `output_attestation_document` and `allow_missing_output_attestation=False` raises `CallerError`
+    - Test `complete=true` with no `output_attestation_document` and `allow_missing_output_attestation=True` logs warning and returns result
+    - Test `complete=true` with valid `output_attestation_document` validates normally regardless of flag
+    - **Validates: Requirements 5.13, 5.14**
+
+  - [ ] 80.6 Write unit tests for fail-closed output attestation
+    - Test final poll with null attestation and `allow_missing_output_attestation=False` raises `CallerError`
+    - Test final poll with null attestation and `allow_missing_output_attestation=True` succeeds with warning
+    - Test `--allow-missing-output-attestation` CLI flag is parsed correctly
+    - _Requirements: 5.13, 5.14_
+
+- [ ] 81. Checkpoint - Ensure execution attestation, exit code, and fail-closed tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 82. Implement output size limits
+  - [ ] 82.1 Update `RemoteExecutorCaller.__init__` to accept `max_output_size` parameter
+    - Add `max_output_size: int | None = None` parameter
+    - Store as instance attribute
+    - _Requirements: 5.15_
+
+  - [ ] 82.2 Update `poll_output()` in `caller.py` to enforce output size limits
+    - After decrypting each poll response, if `max_output_size` is configured:
+      - Check if `len(stdout)` or `len(stderr)` exceeds `max_output_size`
+      - Truncate oversized output to `max_output_size` bytes before logging, summarizing, or persisting
+      - Log a warning when truncation occurs
+    - _Requirements: 5.15_
+
+  - [ ] 82.3 Update `cli.py` to add `--max-output-size` CLI argument
+    - Add `--max-output-size` optional argument (integer, default None)
+    - Pass the value to `RemoteExecutorCaller.__init__`
+    - _Requirements: 5.15_
+
+  - [ ] 82.4 Write property test for output size limits with truncation
+    - **Property 39: Output size limits with truncation**
+    - Generate random stdout/stderr strings of varying sizes
+    - Configure `max_output_size` to a value smaller than some strings
+    - Verify oversized output is truncated to the limit
+    - Verify output within the limit is preserved unchanged
+    - **Validates: Requirements 5.15**
+
+  - [ ] 82.5 Write unit tests for output size limits
+    - Test stdout exceeding `max_output_size` is truncated
+    - Test stderr exceeding `max_output_size` is truncated
+    - Test output within limit is not truncated
+    - Test `max_output_size=None` (default) does not truncate
+    - Test `--max-output-size` CLI argument is parsed correctly
+    - _Requirements: 5.15_
+
+- [ ] 83. Implement size limits on protocol fields
+  - [ ] 83.1 Add size limit constants and validation to `attestation.py`
+    - Define `MAX_ATTESTATION_B64_SIZE` constant (e.g., 1_000_000 bytes)
+    - In `validate_attestation()`, check `len(attestation_b64)` before base64 decoding and reject with `CallerError` if oversized
+    - In `validate_output_attestation()`, apply the same size check
+    - _Requirements: 4A.8_
+
+  - [ ] 83.2 Add size limit validation to `encryption.py`
+    - Define `MAX_ENCRYPTED_RESPONSE_B64_SIZE` constant (e.g., 10_000_000 bytes)
+    - In `decrypt_response()`, check `len(encrypted_response_b64)` before base64 decoding and reject with `CallerError` if oversized
+    - _Requirements: 15.8_
+
+  - [ ] 83.3 Add size limit validation for composite server public key in `caller.py`
+    - Define `MAX_SERVER_PUBLIC_KEY_B64_SIZE` constant (e.g., 100_000 bytes)
+    - In `attest()`, check `len(server_public_key_b64)` before base64 decoding and reject with `CallerError` if oversized
+    - _Requirements: 15.8_
+
+  - [ ] 83.4 Write property test for size limits on protocol fields
+    - **Property 38: Size limits on protocol fields**
+    - Generate oversized base64 strings exceeding each limit — verify rejection before decoding
+    - Generate valid-sized inputs — verify they are processed normally
+    - **Validates: Requirements 4A.8, 15.8**
+
+  - [ ] 83.5 Write unit tests for size limits on protocol fields
+    - Test oversized attestation document is rejected with protocol error
+    - Test oversized encrypted response is rejected with protocol error
+    - Test oversized server public key is rejected with protocol error
+    - Test valid-sized inputs pass through normally
+    - _Requirements: 4A.8, 15.8_
+
+- [ ] 84. Checkpoint - Ensure output size limits and protocol field size limits tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 85. Implement shell injection prevention in workflow YAML
+  - [ ] 85.1 Add `concurrency_count` input validation step to workflow YAML
+    - Add a validation step in the `prepare-matrix` job that validates `concurrency_count` matches regex `^[1-9][0-9]*$`
+    - Pass `concurrency_count` through an environment variable (e.g., `env: CONCURRENCY_COUNT: ${{ inputs.concurrency_count }}`) instead of direct `${{ inputs.concurrency_count }}` shell interpolation
+    - Use the environment variable `$CONCURRENCY_COUNT` in shell code instead of the expression
+    - Fail with a clear error message if the value does not match the regex
+    - _Requirements: 1.15, 1.16_
+
+  - [ ] 85.2 Add `server_url_allowlist` input and validation to workflow YAML
+    - Add optional `server_url_allowlist` input to `workflow_dispatch` inputs (comma-separated string)
+    - Add a validation step that checks if `server_url` is in the allowlist when the allowlist is configured (non-empty)
+    - Reject `server_url` not in the allowlist with a clear error message
+    - When the allowlist is empty/absent, accept all server URLs
+    - _Requirements: 1.17_
+
+  - [ ] 85.3 Write property test for concurrency count input validation
+    - **Property 40: Concurrency count input validation**
+    - Test valid positive integers ("1", "2", "10", "100") are accepted
+    - Test invalid inputs ("0", "-1", "abc", "1.5", "", " 1", "1 ", "01") are rejected
+    - **Validates: Requirements 1.15, 1.16**
+
+  - [ ] 85.4 Write property test for server URL allowlist filtering
+    - **Property 41: Server URL allowlist filtering**
+    - Test `server_url` in allowlist is accepted
+    - Test `server_url` not in allowlist is rejected
+    - Test empty allowlist accepts all URLs
+    - **Validates: Requirements 1.17**
+
+  - [ ] 85.5 Write unit tests for workflow input validation
+    - Test workflow YAML validates `concurrency_count` via regex before shell use
+    - Test workflow YAML passes `concurrency_count` via environment variable, not direct interpolation
+    - Test workflow YAML contains `server_url_allowlist` input
+    - Test workflow YAML rejects `server_url` not in allowlist when configured
+    - _Requirements: 1.15, 1.16, 1.17_
+
+- [ ] 86. Implement Markdown escaping in job summaries
+  - [ ] 86.1 Add Markdown escaping to `_generate_summary()` in `caller.py`
+    - Escape Markdown-sensitive characters (backticks, square brackets, angle brackets, pipes, asterisks, underscores, hash symbols) in stdout and stderr before writing into the summary
+    - Ensure stdout/stderr are contained within fenced code blocks with proper escaping (escape any triple-backtick sequences within the content)
+    - _Requirements: 7.9_
+
+  - [ ] 86.2 Add Markdown escaping to `generate_summary()` in `verify_isolation.py`
+    - Escape Markdown-sensitive characters in marker values and execution IDs before inserting into the Markdown table
+    - Escape pipe characters (`|`) in table cell content to prevent table structure injection
+    - _Requirements: 7.9_
+
+  - [ ] 86.3 Write property test for Markdown escaping in job summary
+    - **Property 42: Markdown escaping in job summary**
+    - Generate random stdout/stderr strings containing Markdown-sensitive characters
+    - Verify `_generate_summary()` produces output where these characters are escaped or safely contained
+    - Generate random marker values with Markdown-sensitive characters
+    - Verify `generate_summary()` in `verify_isolation.py` escapes them in the table
+    - **Validates: Requirements 7.9**
+
+  - [ ] 86.4 Write unit tests for Markdown escaping
+    - Test stdout containing triple backticks is escaped in summary
+    - Test stderr containing pipe characters is escaped in summary
+    - Test marker values containing `|` are escaped in isolation summary table
+    - Test marker values containing `<script>` are escaped
+    - _Requirements: 7.9_
+
+- [ ] 87. Checkpoint - Ensure shell injection prevention and Markdown escaping tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [ ] 88. Update existing tests for compatibility with all security hardening changes
+  - [ ] 88.1 Update existing tests in `test_caller_unit.py` for new constructor parameters
+    - Update all `RemoteExecutorCaller` constructor calls to include `allow_missing_output_attestation` and `max_output_size` where needed
+    - Update tests that relied on `root_cert_pem=""` or `expected_pcrs=None` defaults to provide valid values
+    - Update tests that expected `execute()` to succeed without attestation to expect mandatory attestation
+    - _Requirements: 3.8, 4B.13, 5.13, 5.15_
+
+  - [ ] 88.2 Update existing tests in `test_caller_properties.py` for new constructor parameters
+    - Update all property test `RemoteExecutorCaller` constructor calls for new mandatory/optional parameters
+    - Update Property 12 test for trust-anchor-only model
+    - _Requirements: 4B.9, 4B.13_
+
+- [ ] 89. Final checkpoint - Ensure all security hardening tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP
@@ -1324,3 +1608,4 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - Tasks 54-58 cover per-poll output attestation validation (Requirements 5.6, 5.7, 5.14, 5.15, 6A.1, 6B.8-6B.12, 6C.13; Properties 3, 6, 29). The `poll_output` method now validates output attestation on every poll response, and `run()` no longer calls `validate_output_attestation` separately.
 - Tasks 59-65 cover attestation document artifact persistence (Requirements 18A-18E; Properties 30-33). The `AttestationArtifactCollector` class saves attestation documents and their attested payloads to disk, generates a JSON manifest, and the workflow uploads them as GitHub Actions artifacts.
 - Tasks 66-74 cover server-side security hardening changes: rate limiting retry with exponential backoff on `/health`, `/attest`, `/execute` (Requirements 3.17, 8.6, 11.13; Property 34), new HTTP error codes on `/execute` — 413 Payload Too Large, 503 Service Unavailable, 400 duplicate nonce (Requirements 3.14, 3.15, 3.16), output truncation handling in poll responses and job summary (Requirements 5.16, 5.17, 7.8), updated HTTP 403 error messages (Requirement 10.7), and simplified health check response validation (Requirement 8.2).
+- Tasks 75-89 cover security review hardening (SECURITY_REVIEW.md findings): trust-anchor-only PKI model in certificate chain validation (Requirements 4B.9, 4B.13; Property 12), mandatory attestation parameters on `RemoteExecutorCaller` (Requirement 4B.13; Property 43), mandatory execution-acceptance attestation with request binding (Requirements 3.8, 3.9; Property 35), exit code validation on completion (Requirement 5.12; Property 36), fail-closed output attestation on final poll with `--allow-missing-output-attestation` opt-out (Requirements 5.13, 5.14; Property 37), output size limits with `--max-output-size` (Requirement 5.15; Property 39), size limits on protocol fields — attestation documents, encrypted responses, composite keys (Requirements 4A.8, 15.8; Property 38), shell injection prevention via `concurrency_count` regex validation and environment variable passing (Requirements 1.15, 1.16; Property 40), server URL allowlist (Requirement 1.17; Property 41), and Markdown escaping in job summaries (Requirement 7.9; Property 42).

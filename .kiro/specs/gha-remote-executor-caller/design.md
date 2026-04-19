@@ -6,7 +6,11 @@ The GitHub Actions Remote Executor Caller is the client-side counterpart to the 
 
 The caller communicates with the Remote Executor server using PQ_Hybrid_KEM-based encryption for all sensitive endpoints (`/execute` and `/execution/{id}/output`). It first obtains the server's composite public key (X25519 + ML-KEM-768 encapsulation key) via the unauthenticated `/attest` endpoint (which also returns a NitroTPM attestation document for server identity verification). The composite key is returned as a separate field in the `/attest` JSON response because it exceeds the 1024-byte attestation document `public_key` field limit — the attestation document instead contains a SHA-256 fingerprint of the composite key, which the caller verifies. The caller then generates a client-side X25519 keypair, performs ML-KEM-768 encapsulation against the server's encapsulation key, and derives a shared AES-256-GCM key by combining both the X25519 ECDH shared secret and the ML-KEM-768 shared secret via HKDF-SHA256 with `info=b"pq-hybrid-shared-key"`. All request payloads (including the OIDC token) are encrypted before transmission. The OIDC token is transmitted exclusively within the encrypted payload — no `Authorization` header is used on any request.
 
-The caller validates the server's NitroTPM attestation documents at three points: (1) when the server's composite public key is retrieved via `/attest` (including fingerprint verification), (2) when the execution request is accepted via `/execute`, and (3) on every poll response from `/execution/{id}/output` that contains an `output_attestation_document` (not just on completion). Each request includes a unique random nonce that is verified in the returned attestation document to ensure freshness and prevent replay attacks. When the server fails to generate an output attestation document for a poll response, it returns `output_attestation_document: null` with an `attestation_error` field; the caller logs a warning and continues polling without failing. When a poll response indicates the output was truncated (`truncated: true`), the caller logs a warning and records the truncation status for inclusion in the workflow summary.
+The caller enforces a fail-closed attestation model: the execution-acceptance attestation from `/execute` is mandatory (the caller fails if the decrypted response has no `attestation_document` or it is empty), and the attested `repository_url`, `commit_hash`, and `script_path` fields from the attestation's `user_data` are compared against the values the caller sent in the execution request to ensure cryptographic binding. On the final poll response, the caller fails closed when no valid output attestation is present, unless the `--allow-missing-output-attestation` CLI flag is set for degraded operation. The `exit_code` field must be a concrete integer when `complete=true`; missing or non-integer values are treated as protocol errors.
+
+The caller validates the server's NitroTPM attestation documents at three points: (1) when the server's composite public key is retrieved via `/attest` (including fingerprint verification), (2) when the execution request is accepted via `/execute` (mandatory, with response binding), and (3) on every poll response from `/execution/{id}/output` that contains an `output_attestation_document` (not just on completion). Each request includes a unique random nonce that is verified in the returned attestation document to ensure freshness and prevent replay attacks. When the server fails to generate an output attestation document for a poll response, it returns `output_attestation_document: null` with an `attestation_error` field; the caller logs a warning and continues polling without failing. When a poll response indicates the output was truncated (`truncated: true`), the caller logs a warning and records the truncation status for inclusion in the workflow summary.
+
+The workflow validates the `concurrency_count` input as a strict positive integer (regex `^[1-9][0-9]*$`) before any shell use and passes it via an environment variable rather than direct shell interpolation, preventing shell injection. An optional `server_url_allowlist` input restricts which server URLs the workflow may target. Size limits are enforced on attestation documents, encrypted responses, composite server public keys, and stdout/stderr output before decoding or processing. Untrusted remote output is Markdown-escaped before being written to the GitHub Actions job summary.
 
 The caller handles server-side rate limiting (HTTP 429 Too Many Requests) on `/health`, `/attest`, and `/execute` endpoints by retrying with exponential backoff up to a configurable number of retries. It also handles specific error responses from `/execute`: HTTP 413 (script too large), HTTP 503 (server at capacity), and HTTP 400 (duplicate nonce / anti-replay).
 
@@ -31,6 +35,13 @@ The workflow also supports concurrent execution isolation testing. When configur
 14. **Matrix strategy for concurrent executions**: When `concurrency_count > 1`, the workflow uses a GitHub Actions matrix strategy to dispatch N parallel jobs. Each invocation runs as a fully independent job with its own PQ_Hybrid_KEM session, OIDC token, and attestation validation. A separate `verify-isolation` job collects all outputs, extracts `MARKER:<value>` from each stdout, and performs cross-execution isolation verification.
 15. **Runtime-generated execution markers**: The sample build script generates its own unique marker at runtime using `/proc/sys/kernel/random/uuid`, rather than receiving a marker from the workflow or encrypted payload. This avoids coupling the caller to marker generation and works regardless of whether the server supports passing custom environment variables.
 16. **Sample build script isolation tests**: The sample build script performs filesystem isolation (write/sleep/read at `/tmp/isolation-test.txt`) and process isolation (start a uniquely-named dummy process, verify only one is visible) tests, outputting parseable `ISOLATION_FILE:PASS/FAIL` and `ISOLATION_PROCESS:PASS/FAIL` lines.
+17. **Trust-anchor-only PKI model**: Certificate chain validation constructs an X509Store containing only the pinned AWS Nitro root CA certificate as the trust anchor. All intermediate certificates from the attestation `cabundle` are passed as untrusted intermediates to path validation, not added to the trust store. This prevents a malicious server from injecting its own CA into the cabundle to forge attestations.
+18. **Fail-closed attestation model**: The execution-acceptance attestation from `/execute` is mandatory — the caller fails if the decrypted response has no `attestation_document` or it is empty. The attested `repository_url`, `commit_hash`, and `script_path` fields from the attestation's `user_data` are compared against the values the caller sent in the execution request to ensure cryptographic binding. On the final poll, the caller fails closed when no valid output attestation is present, unless `--allow-missing-output-attestation` is set.
+19. **Input validation and shell injection prevention**: The `concurrency_count` workflow input is validated as a strict positive integer (regex `^[1-9][0-9]*$`) before any shell use and is passed via environment variable rather than direct shell interpolation. An optional `server_url_allowlist` input restricts which server URLs the workflow may target.
+20. **Size limits on protocol fields**: Maximum accepted sizes are enforced on base64-encoded attestation documents, encrypted responses, composite server public keys, and stdout/stderr output before decoding or processing, preventing resource exhaustion from oversized server-supplied blobs.
+21. **Markdown escaping in summaries**: Untrusted remote output (stdout, stderr) is escaped for Markdown-sensitive characters before being written into the GitHub Actions job summary, preventing Markdown injection that could mislead reviewers.
+22. **Mandatory attestation parameters**: `root_cert_pem` and `expected_pcrs` are required parameters on `RemoteExecutorCaller` with no default values. An error is raised if attestation operations are attempted without a configured trust anchor and PCR policy, preventing accidental insecure use.
+23. **Exit code validation**: When `complete=true`, the `exit_code` field must be a concrete integer. Missing or non-integer values are treated as protocol errors, preventing a malformed server response from converting an invalid terminal state into an apparently successful workflow run.
 
 ## Architecture
 
@@ -172,7 +183,10 @@ scripts/
 ### 1. GitHub Actions Workflow (`call-remote-executor.yml`)
 
 Responsibilities:
-- Define `workflow_dispatch` inputs: `server_url` (required), `script_path` (optional, default `scripts/sample-build.sh`), `commit_hash` (optional, default `${{ github.sha }}`), `audience` (optional, specifies the OIDC audience value), `concurrency_count` (optional, default `1`, number of parallel executions)
+- Define `workflow_dispatch` inputs: `server_url` (required), `script_path` (optional, default `scripts/sample-build.sh`), `commit_hash` (optional, default `${{ github.sha }}`), `audience` (optional, specifies the OIDC audience value), `concurrency_count` (optional, default `1`, number of parallel executions), `server_url_allowlist` (optional, comma-separated list of permitted server URLs)
+- Validate the `concurrency_count` input as a strict positive integer (matching regex `^[1-9][0-9]*$`) before any shell use, and fail with a clear error message if the value does not match
+- Pass the `concurrency_count` input through an environment variable rather than interpolating it directly into shell code, to prevent shell injection
+- When `server_url_allowlist` is configured, reject any `server_url` not present in the allowlist before proceeding
 - Declare `id-token: write` in the `permissions` block to enable OIDC token requests
 - Hardcode the NitroTPM attestation root CA certificate PEM inline in the workflow YAML as an environment variable, and pass it to the caller script via `--root-cert-pem`
 - Hardcode the expected PCR4 and PCR7 values as a JSON map inline in the workflow YAML, and pass it to the caller script via `--expected-pcrs`
@@ -255,7 +269,7 @@ External deps: `base64`, `json`, `logging`, `os`, `time`, `requests`.
 
 #### Module: `cli.py`
 
-Contains `main()` — argparse setup, env var reading, `RemoteExecutorCaller` construction, `run()` invocation, error handling, `GITHUB_STEP_SUMMARY` writing. Imports `CallerError` from `errors.py` and `RemoteExecutorCaller` from `caller.py`. Accepts `--attestation-output-dir` argument (optional, default `attestation-documents`) and passes it to `RemoteExecutorCaller.__init__`.
+Contains `main()` — argparse setup, env var reading, `RemoteExecutorCaller` construction, `run()` invocation, error handling, `GITHUB_STEP_SUMMARY` writing. Imports `CallerError` from `errors.py` and `RemoteExecutorCaller` from `caller.py`. Accepts `--attestation-output-dir` argument (optional, default `attestation-documents`), `--allow-missing-output-attestation` flag (optional, default off — enables degraded operation when output attestation is absent), and `--max-output-size` argument (optional, maximum accepted size in bytes for stdout/stderr). Passes all to `RemoteExecutorCaller.__init__`.
 
 #### Import Dependency Graph (call_remote_executor)
 
@@ -343,24 +357,35 @@ class RemoteExecutorCaller:
     def __init__(self, server_url: str, timeout: int = 30,
                  poll_interval: int = 5, max_poll_duration: int = 600,
                  max_retries: int = 3,
-                 root_cert_pem: str = "",
-                 expected_pcrs: dict[int, str] | None = None,
+                 root_cert_pem: str,
+                 expected_pcrs: dict[int, str],
                  audience: str = "",
-                 attestation_output_dir: str | None = None):
+                 attestation_output_dir: str | None = None,
+                 allow_missing_output_attestation: bool = False,
+                 max_output_size: int | None = None):
         """
         Initialize caller with server URL and configuration.
         
         Args:
             root_cert_pem: PEM-encoded AWS Nitro root CA certificate string.
                            Hardcoded in the workflow and always provided.
+                           REQUIRED — raises error if empty or not provided.
             expected_pcrs: Dict mapping PCR index (int) to expected hex value (str).
                            Hardcoded in the workflow for PCR4 and PCR7.
+                           REQUIRED — raises error if None or empty.
             audience: Audience value for OIDC token request. Must match the
                       Remote Executor server's expected audience configuration.
             attestation_output_dir: Optional directory path for saving attestation
                                     documents and payloads as artifacts. When provided,
                                     creates an AttestationArtifactCollector that persists
                                     all attestation documents received during the session.
+            allow_missing_output_attestation: When True, permits the run to continue
+                                              when output attestation is absent or invalid
+                                              on the final poll, logging a warning instead
+                                              of failing. Default False (fail-closed).
+            max_output_size: Optional maximum accepted size in bytes for stdout and
+                             stderr received from the server. Oversized output is
+                             truncated before logging, summarizing, or persisting.
         """
 
     @staticmethod
@@ -430,6 +455,15 @@ class RemoteExecutorCaller:
         
         Decrypts the encrypted response to extract execution_id and attestation_document.
         
+        MANDATORY ATTESTATION: Fails if the decrypted response has no
+        `attestation_document` field or the field is empty.
+        
+        RESPONSE BINDING: After validating the attestation, parses the attested
+        payload and compares the attested `repository_url`, `commit_hash`, and
+        `script_path` fields from the attestation's `user_data` against the values
+        the caller sent in the execution request. Fails if any attested field does
+        not match the sent request values.
+        
         Handles specific HTTP error responses:
         - HTTP 413: Script file exceeds server's MAX_SCRIPT_SIZE_BYTES
         - HTTP 503: Server at maximum concurrent execution capacity
@@ -438,7 +472,8 @@ class RemoteExecutorCaller:
         Validates the attestation and verifies the nonce matches.
         
         Returns parsed decrypted response dict.
-        Raises CallerError on HTTP errors, encryption/decryption failures, or attestation failures.
+        Raises CallerError on HTTP errors, encryption/decryption failures,
+        missing attestation, response binding mismatch, or attestation failures.
         """
 
     def validate_attestation(self, attestation_b64: str, expected_nonce: str | None = None) -> dict:
@@ -458,7 +493,10 @@ class RemoteExecutorCaller:
     def _verify_certificate_chain(self, cert_der: bytes, cabundle: list[bytes]) -> None:
         """
         Validate the signing certificate against the CA bundle and root certificate.
-        Constructs an X509Store with root_cert_pem and intermediate certs from cabundle.
+        Constructs an X509Store with ONLY the pinned root_cert_pem as the trust anchor.
+        Passes all intermediate certificates from cabundle as untrusted intermediates
+        to path validation, rather than adding them to the trust store. This prevents
+        a malicious server from injecting its own CA into the cabundle to forge attestations.
         Raises CallerError if certificate chain validation fails.
         """
 
@@ -502,6 +540,19 @@ class RemoteExecutorCaller:
         When output_attestation_document is null and an attestation_error field is present,
         logs a warning with the error details and continues polling without failing.
         
+        EXIT CODE VALIDATION: When `complete=true`, verifies that `exit_code` is a
+        concrete integer. Missing or non-integer `exit_code` is treated as a protocol
+        error that fails the workflow step.
+        
+        FAIL-CLOSED OUTPUT ATTESTATION: When `complete=true` and the final poll
+        response does not contain a valid output attestation document, fails the
+        workflow step with an error — unless `allow_missing_output_attestation` is
+        set, in which case logs a warning and continues.
+        
+        OUTPUT SIZE LIMITS: Enforces configurable maximum accepted size for stdout
+        and stderr. Oversized output is truncated before logging, summarizing, or
+        persisting to artifacts.
+        
         When the decrypted response contains `truncated: true`, logs a warning indicating
         the server output was truncated due to exceeding the maximum output size, and records
         the truncation status for inclusion in the workflow result reporting.
@@ -510,6 +561,7 @@ class RemoteExecutorCaller:
         Returns final decrypted response with stdout, stderr, exit_code,
         output_attestation_document, and truncated status.
         Raises CallerError on timeout, repeated HTTP failures, decryption errors,
+        exit_code validation failure, missing output attestation (when fail-closed),
         or output attestation validation failures.
         """
 
@@ -535,8 +587,12 @@ class RemoteExecutorCaller:
         """
         Orchestrate full flow:
         health_check → request_oidc_token → attest (get composite server public key, verify fingerprint, PQ_Hybrid_KEM key exchange)
-        → execute (encrypted) → validate_attestation → poll_output (encrypted, with per-poll output attestation validation)
-        → finalize attestation artifacts → report results (including truncation status if applicable).
+        → execute (encrypted, mandatory attestation with response binding)
+        → poll_output (encrypted, with per-poll output attestation validation,
+          exit_code validation, fail-closed output attestation on final poll,
+          output size limits)
+        → finalize attestation artifacts → report results (with Markdown escaping
+          and truncation status if applicable).
         
         At each attestation point, saves the attestation document and its corresponding
         attested payload via AttestationArtifactCollector (if attestation_output_dir is configured).
@@ -823,11 +879,12 @@ Validation steps for server identity attestation (`validate_attestation`):
 
 **Step 2: Certificate Chain (PKI) Validation**
 1. Create an `OpenSSL.crypto.X509Store`
-2. Load the `root_cert_pem` as a PEM certificate and add to the store
-3. For each certificate in `cabundle[1:]` (skipping the first/root entry), load as DER and add to the store
-4. Load the `certificate` field from the payload as a DER certificate
-5. Create an `X509StoreContext` with the store and the signing certificate
+2. Load the `root_cert_pem` as a PEM certificate and add to the store as the ONLY trust anchor
+3. Load each certificate in `cabundle` (all entries) as DER certificates into a list of untrusted intermediates — do NOT add them to the X509Store
+4. Load the `certificate` field from the payload as a DER certificate (the signing certificate)
+5. Create an `X509StoreContext` with the store, the signing certificate, and the untrusted intermediate chain
 6. Call `verify_certificate()` — raises on failure
+7. This ensures only the pinned root is trusted; a malicious server cannot inject its own CA via the cabundle
 
 **Step 3: COSE Signature Verification**
 1. Load the signing certificate and extract its public key's `public_numbers()` (x, y coordinates)
@@ -872,7 +929,8 @@ Validation steps for output integrity attestation (`validate_output_attestation`
 | `script_path` | string | no | `scripts/sample-build.sh` | Path to script in the repository |
 | `commit_hash` | string | no | `${{ github.sha }}` | Git commit SHA to execute |
 | `audience` | string | no | — | Audience value for OIDC token request, must match server's expected audience |
-| `concurrency_count` | string | no | `1` | Number of parallel execution requests to dispatch for isolation testing |
+| `concurrency_count` | string | no | `1` | Number of parallel execution requests to dispatch for isolation testing. Validated as strict positive integer (`^[1-9][0-9]*$`) before shell use; passed via environment variable |
+| `server_url_allowlist` | string | no | — | Comma-separated list of permitted server URLs. When configured, `server_url` must be present in this list or the workflow fails |
 
 ### Workflow Permissions
 
@@ -1165,7 +1223,7 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 *For any* HTTP error status code (4xx or 5xx), when the `/execute` endpoint returns that status, the `execute` method should raise a `CallerError` containing the status code and error details. Specifically: HTTP 413 should indicate script size exceeds server maximum, HTTP 503 should indicate server at maximum concurrent execution capacity, HTTP 400 with duplicate nonce should indicate anti-replay rejection, and HTTP 429 should trigger retry with exponential backoff before failing with a rate limit error.
 
-**Validates: Requirements 3.8, 3.14, 3.15, 3.16, 3.17**
+**Validates: Requirements 3.10, 3.16, 3.17, 3.18, 3.19**
 
 ### Property 6: Polling termination on completion with per-poll output attestation
 
@@ -1203,11 +1261,11 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 4D.17, 4D.18, 4D.19**
 
-### Property 12: Certificate chain validation rejects untrusted certificates
+### Property 12: Certificate chain validation rejects untrusted certificates (trust-anchor-only model)
 
-*For any* signing certificate not chained to the configured root CA, `_verify_certificate_chain` should raise a `CallerError`. Conversely, a certificate properly chained through the cabundle to the root CA should pass validation.
+*For any* signing certificate not chained to the configured pinned root CA, `_verify_certificate_chain` should raise a `CallerError`. Conversely, a certificate properly chained through the cabundle to the root CA should pass validation. Critically, if a non-pinned CA is included in the `cabundle`, a signing certificate chained to that non-pinned CA should be rejected — because cabundle entries are passed as untrusted intermediates, not added to the trust store as trust anchors.
 
-**Validates: Requirements 4B.8, 4B.11, 4B.12**
+**Validates: Requirements 4B.8, 4B.9, 4B.11, 4B.12**
 
 ### Property 13: OIDC token acquisition
 
@@ -1341,6 +1399,60 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 **Validates: Requirements 3.17, 8.6, 11.13**
 
+### Property 35: Mandatory execution-acceptance attestation with request binding
+
+*For any* decrypted `/execute` response, if the `attestation_document` field is missing or empty, the `execute` method should raise a `CallerError` indicating the execution-acceptance attestation is missing. When the attestation is present and valid, the attested `repository_url`, `commit_hash`, and `script_path` fields from the attestation's `user_data` must match the values the caller sent in the execution request; if any attested field does not match, `execute` should raise a `CallerError` indicating a request binding mismatch.
+
+**Validates: Requirements 3.8, 3.9**
+
+### Property 36: Exit code validation on completion
+
+*For any* poll response where `complete` is `true`, the `exit_code` field must be a concrete integer. If `exit_code` is `None`, a string, a float, or any non-integer type, `poll_output` should raise a `CallerError` indicating a protocol error. If `exit_code` is a valid integer, `poll_output` should accept it and return it in the result.
+
+**Validates: Requirements 5.12**
+
+### Property 37: Fail-closed output attestation on final poll
+
+*For any* final poll response (`complete=true`) that does not contain a valid `output_attestation_document`, `poll_output` should raise a `CallerError` indicating output attestation is missing. When `allow_missing_output_attestation` is set to `True`, `poll_output` should instead log a warning and return the result without failing. When the final poll response does contain a valid output attestation, `poll_output` should validate it normally regardless of the flag setting.
+
+**Validates: Requirements 5.13, 5.14**
+
+### Property 38: Size limits on protocol fields
+
+*For any* base64-encoded attestation document, encrypted response, or composite server public key that exceeds the configured maximum accepted size, the caller should reject the input with a protocol error before attempting to decode, parse, or process it. Inputs within the size limit should be processed normally.
+
+**Validates: Requirements 4A.8, 15.8**
+
+### Property 39: Output size limits with truncation
+
+*For any* stdout or stderr string received from the server, if the string exceeds the configured `max_output_size`, the caller should truncate it to the maximum size before logging, summarizing, or persisting to artifacts. Strings within the limit should be preserved unchanged.
+
+**Validates: Requirements 5.15**
+
+### Property 40: Concurrency count input validation
+
+*For any* string input for `concurrency_count`, the workflow validation should accept if and only if the string matches the regex `^[1-9][0-9]*$` (a strict positive integer with no leading zeros). Invalid inputs (empty strings, zero, negative numbers, non-numeric strings, strings with special characters or spaces) should cause the workflow to fail with a clear error message.
+
+**Validates: Requirements 1.15, 1.16**
+
+### Property 41: Server URL allowlist filtering
+
+*For any* `server_url` and `server_url_allowlist` configuration, when the allowlist is configured (non-empty), the workflow should accept the `server_url` if and only if it appears in the comma-separated allowlist. When the allowlist is not configured (empty or absent), all server URLs should be accepted.
+
+**Validates: Requirements 1.17**
+
+### Property 42: Markdown escaping in job summary
+
+*For any* stdout and stderr strings containing Markdown-sensitive characters (backticks, square brackets, angle brackets, pipes, asterisks, underscores, hash symbols), the `_generate_summary` method should produce a summary string where these characters in the untrusted output sections are escaped or contained within fenced code blocks, preventing Markdown injection that could alter the rendered summary.
+
+**Validates: Requirements 7.9**
+
+### Property 43: Mandatory attestation parameters
+
+*For any* attempt to construct a `RemoteExecutorCaller` with an empty `root_cert_pem` or `None`/empty `expected_pcrs`, the constructor should raise an error indicating that attestation trust anchor and PCR policy are required. This prevents accidental insecure use of the library API.
+
+**Validates: Requirements 4B.13**
+
 ## Error Handling
 
 ### Error Categories and Responses
@@ -1399,6 +1511,18 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | Output Attestation | Nonce missing or mismatch | Raise `CallerError(phase="output_attestation")` with expected vs actual nonce |
 | Output Attestation | Digest mismatch | Raise `CallerError(phase="output_attestation")` with both digests |
 | Output Truncation | Poll response contains `truncated: true` | Log warning indicating server output was truncated, record truncation status for summary reporting |
+| Execute | Decrypted response missing `attestation_document` or field is empty | Raise `CallerError(phase="execute")` indicating mandatory execution-acceptance attestation is missing |
+| Execute | Attested `repository_url`, `commit_hash`, or `script_path` from `user_data` does not match the values sent in the execution request | Raise `CallerError(phase="execute")` indicating request binding mismatch between attested and sent fields |
+| Polling | `complete=true` with missing or non-integer `exit_code` | Raise `CallerError(phase="polling")` indicating protocol error: exit_code must be a concrete integer when complete |
+| Polling | `complete=true` with no valid output attestation (fail-closed) | Raise `CallerError(phase="polling")` indicating output attestation is missing — unless `--allow-missing-output-attestation` is set, in which case log warning and continue |
+| Polling | stdout or stderr exceeds max accepted size | Truncate oversized output before logging, summarizing, or persisting; log warning about truncation |
+| Attestation | Base64-encoded attestation document exceeds max accepted size | Raise `CallerError(phase="attestation")` indicating oversized attestation document rejected |
+| Decryption | Base64-encoded `encrypted_response` exceeds max accepted size | Raise `CallerError(phase="encryption")` indicating oversized encrypted response rejected |
+| Attest | Base64-encoded composite server public key exceeds max accepted size | Raise `CallerError(phase="attest")` indicating oversized server public key rejected |
+| Initialization | `root_cert_pem` empty or not provided | Raise error indicating attestation trust anchor is required |
+| Initialization | `expected_pcrs` is None or empty | Raise error indicating PCR policy is required |
+| Workflow | `concurrency_count` does not match `^[1-9][0-9]*$` | Fail workflow with clear error message before any shell use |
+| Workflow | `server_url` not in `server_url_allowlist` (when allowlist is configured) | Fail workflow with error indicating server URL is not in the permitted allowlist |
 | Isolation Verification | Execution stdout missing `MARKER:` line | Fail workflow with error identifying the execution and missing marker |
 | Isolation Verification | Duplicate marker values across executions | Fail workflow with isolation violation error identifying the affected executions |
 | Isolation Verification | Execution stdout contains `ISOLATION_FILE:FAIL` | Fail workflow with filesystem isolation violation error identifying the execution |
@@ -1483,8 +1607,8 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 11. **PCR validation accepts matching and rejects mismatching values**: Generate random PCR dicts (index→bytes). Generate expected_pcrs that match a subset, verify acceptance. Then mutate one expected value or add a missing index, verify rejection.
     `# Feature: gha-remote-executor-caller, Property 11: PCR validation accepts matching and rejects mismatching values`
 
-12. **Certificate chain validation rejects untrusted certificates**: Generate a test root CA and signing certificate chain. Verify `_verify_certificate_chain` accepts. Then use a different root CA and verify rejection.
-    `# Feature: gha-remote-executor-caller, Property 12: Certificate chain validation rejects untrusted certificates`
+12. **Certificate chain validation rejects untrusted certificates (trust-anchor-only model)**: Generate a test root CA and signing certificate chain. Verify `_verify_certificate_chain` accepts. Then use a different root CA and verify rejection. Additionally, generate a non-pinned CA, include it in the cabundle, and create a signing cert chained to that non-pinned CA — verify it is rejected even though the non-pinned CA is in the cabundle (untrusted intermediates model).
+    `# Feature: gha-remote-executor-caller, Property 12: Certificate chain validation rejects untrusted certificates (trust-anchor-only model)`
 
 13. **OIDC token acquisition**: Generate random audience strings. Mock the OIDC provider endpoint. Verify `request_oidc_token` makes an HTTP GET to `ACTIONS_ID_TOKEN_REQUEST_URL` with the correct `audience` query parameter and `Authorization: Bearer {ACTIONS_ID_TOKEN_REQUEST_TOKEN}` header, and that the returned token is stored on the instance.
     `# Feature: gha-remote-executor-caller, Property 13: OIDC token acquisition`
@@ -1553,6 +1677,33 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 
 32. **Rate limit retry with exponential backoff**: For each endpoint (`/health`, `/attest`, `/execute`), generate random K (number of consecutive 429 responses). When K < max_retries, mock K 429 responses followed by a success response. Verify the caller succeeds after K+1 total requests. When K >= max_retries, verify the caller raises `CallerError` with a rate limit error. Verify retry delays follow exponential backoff.
     `# Feature: gha-remote-executor-caller, Property 34: Rate limit retry with exponential backoff`
+
+33. **Mandatory execution-acceptance attestation with request binding**: Generate random decrypted `/execute` responses. When `attestation_document` is missing or empty, verify `execute` raises `CallerError`. When present, create attestation payloads with `user_data` containing matching and mismatching `repository_url`/`commit_hash`/`script_path` fields. Verify `execute` accepts when attested fields match the sent request values and raises `CallerError` when they differ.
+    `# Feature: gha-remote-executor-caller, Property 35: Mandatory execution-acceptance attestation with response binding`
+
+34. **Exit code validation on completion**: Generate random poll responses with `complete=true` and various `exit_code` types (None, string, float, bool, valid integers 0-255). Verify `poll_output` raises `CallerError` for non-integer values and accepts valid integers.
+    `# Feature: gha-remote-executor-caller, Property 36: Exit code validation on completion`
+
+35. **Fail-closed output attestation on final poll**: Generate random final poll responses (`complete=true`) with and without `output_attestation_document`. With `allow_missing_output_attestation=False`, verify `CallerError` when attestation is missing. With `allow_missing_output_attestation=True`, verify warning is logged but no error raised. Verify valid attestation is always validated regardless of flag.
+    `# Feature: gha-remote-executor-caller, Property 37: Fail-closed output attestation on final poll`
+
+36. **Size limits on protocol fields**: Generate random base64 strings of varying sizes for attestation documents, encrypted responses, and composite server public keys. Verify strings exceeding the configured maximum are rejected with a protocol error before any decoding. Verify strings within limits are processed normally.
+    `# Feature: gha-remote-executor-caller, Property 38: Size limits on protocol fields`
+
+37. **Output size limits with truncation**: Generate random stdout/stderr strings of varying sizes. Configure a `max_output_size`. Verify strings exceeding the limit are truncated. Verify strings within the limit are preserved unchanged.
+    `# Feature: gha-remote-executor-caller, Property 39: Output size limits with truncation`
+
+38. **Concurrency count input validation**: Generate random strings (valid positive integers, zero, negative numbers, empty strings, strings with special characters, floats, strings with leading zeros). Verify the validation logic accepts iff the string matches `^[1-9][0-9]*$`.
+    `# Feature: gha-remote-executor-caller, Property 40: Concurrency count input validation`
+
+39. **Server URL allowlist filtering**: Generate random server URLs and comma-separated allowlists. Verify the URL is accepted iff it appears in the allowlist when configured. Verify all URLs are accepted when the allowlist is empty or not configured.
+    `# Feature: gha-remote-executor-caller, Property 41: Server URL allowlist filtering`
+
+40. **Markdown escaping in job summary**: Generate random stdout/stderr strings containing Markdown-sensitive characters (backticks, brackets, pipes, asterisks, etc.). Call `_generate_summary`. Verify the untrusted output sections are properly escaped or contained within fenced code blocks.
+    `# Feature: gha-remote-executor-caller, Property 42: Markdown escaping in job summary`
+
+41. **Mandatory attestation parameters**: Generate random combinations of empty/non-empty `root_cert_pem` and None/empty/non-empty `expected_pcrs`. Verify `RemoteExecutorCaller` constructor raises an error when either is missing/empty and succeeds when both are provided.
+    `# Feature: gha-remote-executor-caller, Property 43: Mandatory attestation parameters`
 
 **Unit tests** (specific examples and edge cases):
 
@@ -1643,4 +1794,30 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Job summary includes truncation warning when output was truncated (Req 7.8)
 - Execute with HTTP 403 raises `CallerError` mentioning repository claim mismatch (Req 10.7)
 - Health check response with only `{"status": "healthy"}` succeeds (Req 8.2)
+- Decrypted `/execute` response with missing `attestation_document` raises `CallerError` (Req 3.8)
+- Decrypted `/execute` response with empty `attestation_document` raises `CallerError` (Req 3.8)
+- Attested `repository_url` mismatch with sent request raises `CallerError` (Req 3.9)
+- Attested `commit_hash` mismatch with sent request raises `CallerError` (Req 3.9)
+- Attested `script_path` mismatch with sent request raises `CallerError` (Req 3.9)
+- `complete=true` with `exit_code=None` raises `CallerError` as protocol error (Req 5.12)
+- `complete=true` with `exit_code` as string raises `CallerError` as protocol error (Req 5.12)
+- Final poll with no output attestation raises `CallerError` when `allow_missing_output_attestation=False` (Req 5.13)
+- Final poll with no output attestation logs warning when `allow_missing_output_attestation=True` (Req 5.14)
+- CLI argparse includes `--allow-missing-output-attestation` flag (Req 5.14)
+- CLI argparse includes `--max-output-size` argument (Req 5.15)
+- `RemoteExecutorCaller` with empty `root_cert_pem` raises error (Req 4B.13)
+- `RemoteExecutorCaller` with `expected_pcrs=None` raises error (Req 4B.13)
+- `RemoteExecutorCaller` with `expected_pcrs={}` raises error (Req 4B.13)
+- Certificate chain validation rejects signing cert chained to non-pinned CA in cabundle (Req 4B.9)
+- Oversized base64 attestation document rejected before decoding (Req 4A.8)
+- Oversized base64 encrypted_response rejected before decoding (Req 15.8)
+- Oversized base64 composite server public key rejected before decoding (Req 15.8)
+- Workflow YAML contains `server_url_allowlist` input (Req 1.17)
+- Workflow YAML validates `concurrency_count` as strict positive integer via regex (Req 1.15)
+- Workflow YAML passes `concurrency_count` via environment variable (Req 1.16)
+- Job summary escapes Markdown-sensitive characters in stdout/stderr (Req 7.9)
+- `concurrency_count` input of "0" fails validation (Req 1.15)
+- `concurrency_count` input of "-1" fails validation (Req 1.15)
+- `concurrency_count` input of "abc" fails validation (Req 1.15)
+- `concurrency_count` input of "1; echo pwned" fails validation (Req 1.15)
 

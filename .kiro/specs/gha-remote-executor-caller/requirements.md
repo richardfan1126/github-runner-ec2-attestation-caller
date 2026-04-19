@@ -51,6 +51,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 - **Server_Public_Key_Fingerprint**: The SHA-256 hash of the serialized composite Server_Public_Key, included in the attestation document's `public_key` field because the composite key (1224 bytes) exceeds the 1024-byte field limit. The client verifies this fingerprint against the composite key received in the `/attest` JSON response body.
 - **Encrypted_Envelope**: The JSON structure sent to encrypted endpoints, containing `encrypted_payload` (base64-encoded `nonce || ciphertext`) and `client_public_key` (base64-encoded composite client key: length-prefixed X25519 pub + ML-KEM-768 ciphertext)
 - **Nonce**: A random value included in all attestation requests and encrypted payloads to verify freshness of attestation documents and prevent replay attacks. The caller generates a unique nonce for every request to an endpoint that supports it (/attest, /execute, /execution/{id}/output)
+- **Server_URL_Allowlist**: An optional list of permitted Server_URL values (or a single environment variable / repository-level configuration) that restricts which Remote_Executor_Server endpoints the Caller_Workflow may target, preventing credential delivery to arbitrary servers
 - **Concurrency_Count**: A positive integer (default 1) specifying how many independent execution requests the Caller_Workflow dispatches in parallel to demonstrate that the Remote_Executor_Server isolates concurrent executions
 - **Execution_Marker**: A unique identifier generated at runtime by the Sample_Build_Script (e.g., using `uuidgen` or `/proc/sys/kernel/random/uuid`), echoed in the script output as `MARKER:<value>`, and used to verify that each execution produces its own unique output. Since the server does not support passing custom environment variables from the caller, the marker is generated inside the execution environment rather than being passed from the workflow.
 - **Isolation_Verification**: The process of verifying that each concurrent execution's output passes its own filesystem and process isolation tests (`ISOLATION_FILE:PASS`, `ISOLATION_PROCESS:PASS`), contains exactly one `MARKER:<value>` line, and that each execution's marker is unique across all concurrent executions
@@ -59,7 +60,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 - **Attestation_Artifact**: A GitHub Actions artifact containing one or more saved Attestation_Documents from a single execution session, organized in a directory structure that identifies the attestation phase and sequence, enabling post-workflow re-verification of the execution's cryptographic provenance
 - **Attestation_Phase**: A label identifying which point in the execution lifecycle an Attestation_Document was received: `server-identity` (from GET /attest), `execution-acceptance` (from POST /execute), or `output-integrity-poll-N` (from the Nth POST /execution/{id}/output response that contained an attestation document)
 - **Attestation_Bundle**: The complete set of Attestation_Artifacts uploaded for a single execution session, containing all attestation documents and their corresponding attested payloads received during that session, along with a manifest file describing each document's phase, timestamp, associated nonce, and payload file reference
-- **Attested_Payload**: The data that an Attestation_Document cryptographically covers — for `server-identity` this is the composite Server_Public_Key and its fingerprint, for `execution-acceptance` this is the execution response (execution_id, status), and for `output-integrity-poll-N` this is the canonical Script_Output (stdout, stderr, exit_code) at that point in time along with its SHA-256 digest
+- **Attested_Payload**: The data that an Attestation_Document cryptographically covers — for `server-identity` this is the composite Server_Public_Key and its fingerprint, for `execution-acceptance` this is the execution metadata (repository_url, commit_hash, script_path, timestamp) in the attestation's `user_data` field, and for `output-integrity-poll-N` this is the canonical Script_Output (stdout, stderr, exit_code) at that point in time along with its SHA-256 digest
 
 ## Requirements
 
@@ -83,6 +84,9 @@ The caller script is organized as a Python package (not a single file) under `.g
 12. THE `call_remote_executor` package SHALL contain a `__main__.py` that calls the `main()` function from `cli.py`, enabling `python .github/scripts/call_remote_executor` and `python -m call_remote_executor` invocation
 13. THE public API of the `call_remote_executor` package (class names `CallerError`, `ClientEncryption`, `RemoteExecutorCaller`; the `EXPECTED_ATTESTATION_FIELDS` constant; and all public method signatures on those classes) SHALL be preserved across all submodules
 14. THE root `pyproject.toml` and `.github/scripts/pyproject.toml` build configurations SHALL reference the package directory `.github/scripts/call_remote_executor/`
+15. THE Caller_Workflow SHALL validate the `concurrency_count` input as a strict positive integer (matching the regex `^[1-9][0-9]*$`) before any shell use, and fail with a clear error message if the value does not match
+16. THE Caller_Workflow SHALL pass the `concurrency_count` input through an environment variable rather than interpolating it directly into shell code, to prevent shell injection
+17. THE Caller_Workflow SHALL accept an optional input `server_url_allowlist` (comma-separated list of permitted Server_URL values) or derive the permitted Server_URL from a repository-controlled configuration, and reject any `server_url` not present in the Server_URL_Allowlist when the allowlist is configured
 
 ### Requirement 2: Sample Build Script
 
@@ -118,16 +122,18 @@ The caller script is organized as a Python package (not a single file) under `.g
 5. THE Caller_Script SHALL use the `GITHUB_TOKEN` secret for the `github_token` field
 6. THE Caller_Script SHALL include the OIDC_Token in the `oidc_token` field of the encrypted request payload
 7. WHEN the Remote_Executor_Server returns HTTP 200, THE Caller_Script SHALL decrypt the encrypted response using the Shared_Key and extract the Execution_ID and Attestation_Document from the decrypted payload
-8. IF the Remote_Executor_Server returns an HTTP error status, THEN THE Caller_Script SHALL fail the workflow step with the error details
-9. IF the Remote_Executor_Server is unreachable, THEN THE Caller_Script SHALL fail the workflow step with a connection error message
-10. THE Caller_Script SHALL set a configurable timeout for the HTTP POST request
-11. THE Caller_Script SHALL include a `nonce` field in the encrypted request payload for attestation freshness verification
-12. THE Caller_Script SHALL generate a unique random nonce for each `/execute` request
-13. THE Caller_Script SHALL verify that the nonce in the Attestation_Document returned within the `/execute` response matches the nonce that was sent
-14. IF the Remote_Executor_Server returns HTTP 413 Payload Too Large, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the script file exceeds the server's maximum allowed script size
-15. IF the Remote_Executor_Server returns HTTP 503 Service Unavailable, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the server is at maximum concurrent execution capacity
-16. IF the Remote_Executor_Server returns HTTP 400 Bad Request with a duplicate nonce error, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the nonce was rejected as a duplicate (anti-replay)
-17. IF the Remote_Executor_Server returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the request with exponential backoff up to a configurable number of retries before failing with a rate limit error
+8. IF the decrypted `/execute` response does not contain an `attestation_document` field or the field is empty, THEN THE Caller_Script SHALL fail the workflow step with an error indicating the execution-acceptance attestation is missing
+9. WHEN the Caller_Script validates the execution-acceptance Attestation_Document, THE Caller_Script SHALL parse the `user_data` field from the validated attestation payload and compare the attested `repository_url`, `commit_hash`, and `script_path` fields against the values the caller sent in the execution request, failing the workflow step if any attested field does not match the sent request values
+10. IF the Remote_Executor_Server returns an HTTP error status, THEN THE Caller_Script SHALL fail the workflow step with the error details
+11. IF the Remote_Executor_Server is unreachable, THEN THE Caller_Script SHALL fail the workflow step with a connection error message
+12. THE Caller_Script SHALL set a configurable timeout for the HTTP POST request
+13. THE Caller_Script SHALL include a `nonce` field in the encrypted request payload for attestation freshness verification
+14. THE Caller_Script SHALL generate a unique random nonce for each `/execute` request
+15. THE Caller_Script SHALL verify that the nonce in the Attestation_Document returned within the `/execute` response matches the nonce that was sent
+16. IF the Remote_Executor_Server returns HTTP 413 Payload Too Large, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the script file exceeds the server's maximum allowed script size
+17. IF the Remote_Executor_Server returns HTTP 503 Service Unavailable, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the server is at maximum concurrent execution capacity
+18. IF the Remote_Executor_Server returns HTTP 400 Bad Request with a duplicate nonce error, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the nonce was rejected as a duplicate (anti-replay)
+19. IF the Remote_Executor_Server returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the request with exponential backoff up to a configurable number of retries before failing with a rate limit error
 
 ### Requirement 4: Server Identity Attestation Validation
 
@@ -144,31 +150,33 @@ The caller script is organized as a Python package (not a single file) under `.g
 5. IF the outer CBOR parsing fails or the result is not a 4-element array, THEN THE Caller_Script SHALL fail the workflow step with a COSE Sign1 structure error
 6. IF the payload CBOR decoding fails, THEN THE Caller_Script SHALL fail the workflow step with a payload parsing error
 7. THE Caller_Script SHALL verify that the decoded payload contains expected structural fields (module_id, digest, timestamp, pcrs, certificate, cabundle)
+8. THE Caller_Script SHALL enforce a maximum accepted size for base64-encoded attestation documents before decoding, and reject oversized attestation documents with a protocol error
 
 ##### 4B: Certificate Chain (PKI) Validation
 
 8. THE Caller_Script SHALL validate the Signing_Certificate against the Certificate_Chain and Root_CA_Certificate
-9. THE Caller_Script SHALL construct an X509 certificate store containing the Root_CA_Certificate and all intermediate certificates from the cabundle (excluding the first entry, which is the root)
+9. THE Caller_Script SHALL construct an X509 certificate store containing only the pinned Root_CA_Certificate as the trust anchor, and pass all intermediate certificates from the cabundle as untrusted intermediates to path validation rather than adding them to the trust store
 10. THE Caller_Script SHALL load the Signing_Certificate from the certificate field of the attestation payload (DER-encoded)
-11. THE Caller_Script SHALL verify the Signing_Certificate against the constructed X509 store
+11. THE Caller_Script SHALL verify the Signing_Certificate against the constructed X509 store using the untrusted intermediate chain
 12. IF the certificate chain validation fails, THEN THE Caller_Script SHALL fail the workflow step with a certificate validation error
+13. THE RemoteExecutorCaller class SHALL require `root_cert_pem` and `expected_pcrs` as mandatory parameters with no default values, and raise an error if attestation operations (attest, execute, or output attestation validation) are attempted without a configured trust anchor and PCR policy
 
 ##### 4C: COSE Signature Verification
 
-13. THE Caller_Script SHALL extract the EC2 public key parameters (x, y coordinates on the P-384 curve) from the Signing_Certificate
-14. THE Caller_Script SHALL reconstruct a COSE Sign1 message using the protected header (CBOR-decoded from index 0), unprotected header (index 1), payload (index 2), and signature (index 3)
-15. THE Caller_Script SHALL verify the COSE Sign1 signature using the extracted EC2 public key with the ES384 algorithm
-16. IF the COSE signature verification fails, THEN THE Caller_Script SHALL fail the workflow step with a signature verification error
+14. THE Caller_Script SHALL extract the EC2 public key parameters (x, y coordinates on the P-384 curve) from the Signing_Certificate
+15. THE Caller_Script SHALL reconstruct a COSE Sign1 message using the protected header (CBOR-decoded from index 0), unprotected header (index 1), payload (index 2), and signature (index 3)
+16. THE Caller_Script SHALL verify the COSE Sign1 signature using the extracted EC2 public key with the ES384 algorithm
+17. IF the COSE signature verification fails, THEN THE Caller_Script SHALL fail the workflow step with a signature verification error
 
 ##### 4D: PCR Validation
 
-17. THE Caller_Script SHALL compare each expected PCR value (PCR4 and PCR7) against the corresponding PCR in the attestation document
-18. IF a specified PCR index is not present in the attestation document, THEN THE Caller_Script SHALL fail the workflow step with a missing PCR error identifying the index
-19. IF a PCR value in the attestation document does not match the expected hex value, THEN THE Caller_Script SHALL fail the workflow step with a PCR mismatch error identifying the index
+18. THE Caller_Script SHALL compare each expected PCR value (PCR4 and PCR7) against the corresponding PCR in the attestation document
+19. IF a specified PCR index is not present in the attestation document, THEN THE Caller_Script SHALL fail the workflow step with a missing PCR error identifying the index
+20. IF a PCR value in the attestation document does not match the expected hex value, THEN THE Caller_Script SHALL fail the workflow step with a PCR mismatch error identifying the index
 
 ##### 4E: Audit Logging
 
-20. THE Caller_Script SHALL log the attestation document fields for audit purposes
+21. THE Caller_Script SHALL log the attestation document fields for audit purposes
 
 ### Requirement 5: Execution Output Polling
 
@@ -179,22 +187,26 @@ The caller script is organized as a Python package (not a single file) under `.g
 1. THE Caller_Script SHALL send HTTP POST requests to `{Server_URL}/execution/{Execution_ID}/output` with an encrypted request body to poll for results
 2. THE Caller_Script SHALL encrypt the output request payload using the same Shared_Key derived during the `/execute` PQ_Hybrid_KEM key exchange
 3. THE encrypted output request payload SHALL contain the `oidc_token` field and a `nonce` field
-13. THE Caller_Script SHALL generate a unique random nonce for each `/execution/{id}/output` request
-14. WHEN the decrypted poll response contains an Output_Attestation_Document, THE Caller_Script SHALL verify that the nonce in the Output_Attestation_Document matches the nonce that was sent in that polling request
-4. THE Caller_Script SHALL poll at a configurable interval with a default of 5 seconds
-5. WHEN the Caller_Script receives an encrypted response, THE Caller_Script SHALL decrypt the response using the Shared_Key
-6. THE Caller_Script SHALL extract the `output_attestation_document` field from every decrypted poll response, regardless of execution status (running, completed, failed, or timed_out)
-7. WHEN the decrypted poll response contains an Output_Attestation_Document, THE Caller_Script SHALL validate the output attestation on that poll response (not deferred to completion)
-8. WHILE the decrypted response field `complete` is false, THE Caller_Script SHALL continue polling
-9. WHEN the decrypted response field `complete` is true, THE Caller_Script SHALL extract `stdout`, `stderr`, `exit_code`, and `output_attestation_document` from the decrypted response
-10. THE Caller_Script SHALL enforce a configurable maximum polling duration with a default of 10 minutes
-11. IF the maximum polling duration is exceeded, THEN THE Caller_Script SHALL fail the workflow step with a timeout error
-12. IF a polling request fails with an HTTP error, THEN THE Caller_Script SHALL retry up to a configurable number of times before failing
-13. THE Caller_Script SHALL log incremental output during polling to provide real-time feedback in the workflow log
-14. THE encrypted output request payload SHALL include an optional `offset` field to support incremental output retrieval
-15. WHEN a decrypted poll response contains `output_attestation_document` set to null and an `attestation_error` field, THE Caller_Script SHALL log a warning with the attestation error details and continue polling without failing
-16. WHEN a decrypted poll response contains a `truncated` field set to true, THE Caller_Script SHALL log a warning indicating that the server output was truncated due to exceeding the server's maximum output size
-17. THE Caller_Script SHALL record the truncation status from the most recent poll response for inclusion in the workflow result reporting
+4. THE Caller_Script SHALL generate a unique random nonce for each `/execution/{id}/output` request
+5. WHEN the decrypted poll response contains an Output_Attestation_Document, THE Caller_Script SHALL verify that the nonce in the Output_Attestation_Document matches the nonce that was sent in that polling request
+6. THE Caller_Script SHALL poll at a configurable interval with a default of 5 seconds
+7. WHEN the Caller_Script receives an encrypted response, THE Caller_Script SHALL decrypt the response using the Shared_Key
+8. THE Caller_Script SHALL extract the `output_attestation_document` field from every decrypted poll response, regardless of execution status (running, completed, failed, or timed_out)
+9. WHEN the decrypted poll response contains an Output_Attestation_Document, THE Caller_Script SHALL validate the output attestation on that poll response (not deferred to completion)
+10. WHILE the decrypted response field `complete` is false, THE Caller_Script SHALL continue polling
+11. WHEN the decrypted response field `complete` is true, THE Caller_Script SHALL extract `stdout`, `stderr`, `exit_code`, and `output_attestation_document` from the decrypted response
+12. WHEN the decrypted response field `complete` is true, THE Caller_Script SHALL verify that `exit_code` is a concrete integer, and treat a missing or non-integer `exit_code` as a protocol error that fails the workflow step
+13. WHEN the decrypted response field `complete` is true and the final poll response does not contain a valid Output_Attestation_Document, THE Caller_Script SHALL fail the workflow step with an error indicating output attestation is missing, unless the `--allow-missing-output-attestation` CLI flag is set
+14. THE Caller_Script SHALL accept an optional `--allow-missing-output-attestation` CLI flag that permits the run to continue when output attestation is absent or invalid, logging a warning instead of failing
+15. THE Caller_Script SHALL enforce a configurable maximum accepted size for stdout and stderr received from the Remote_Executor_Server, and truncate oversized output before logging, summarizing, or persisting to artifacts
+16. THE Caller_Script SHALL enforce a configurable maximum polling duration with a default of 10 minutes
+17. IF the maximum polling duration is exceeded, THEN THE Caller_Script SHALL fail the workflow step with a timeout error
+18. IF a polling request fails with an HTTP error, THEN THE Caller_Script SHALL retry up to a configurable number of times before failing
+19. THE Caller_Script SHALL log incremental output during polling to provide real-time feedback in the workflow log
+20. THE encrypted output request payload SHALL include an optional `offset` field to support incremental output retrieval
+21. WHEN a decrypted poll response contains `output_attestation_document` set to null and an `attestation_error` field, THE Caller_Script SHALL log a warning with the attestation error details and continue polling without failing
+22. WHEN a decrypted poll response contains a `truncated` field set to true, THE Caller_Script SHALL log a warning indicating that the server output was truncated due to exceeding the server's maximum output size
+23. THE Caller_Script SHALL record the truncation status from the most recent poll response for inclusion in the workflow result reporting
 
 ### Requirement 6: Output Attestation Validation
 
@@ -239,6 +251,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 6. WHEN the script exit code is non-zero, THE Caller_Workflow SHALL mark the workflow step as failed
 7. THE Caller_Workflow SHALL produce a summary using GitHub Actions job summary (`$GITHUB_STEP_SUMMARY`) containing execution results and verification status
 8. WHEN the server output was truncated, THE Caller_Workflow SHALL include a truncation warning in the job summary indicating that the output was truncated by the server due to exceeding the maximum output size
+9. THE Caller_Workflow SHALL escape Markdown-sensitive characters in untrusted remote output (stdout, stderr) before writing the output into the GitHub Actions job summary, using fenced code blocks with escaping to prevent Markdown injection
 
 ### Requirement 8: Health Check
 
@@ -291,15 +304,15 @@ The caller script is organized as a Python package (not a single file) under `.g
 1. THE Caller_Script SHALL send an HTTP GET request to `{Server_URL}/attest` before submitting the execution request
 2. THE `/attest` request SHALL NOT include an Authorization header or any authentication credentials
 3. THE Caller_Script SHALL include a `nonce` query parameter in the `/attest` request for attestation freshness verification
-12. THE Caller_Script SHALL generate a unique random nonce for each `/attest` request
-4. WHEN the `/attest` endpoint returns HTTP 200, THE Caller_Script SHALL extract the `attestation_document` field and the `server_public_key` field from the JSON response
-5. THE Caller_Script SHALL validate the Attestation_Document from `/attest` using the same COSE Sign1 parsing, PKI validation, COSE signature verification, and PCR validation as Requirement 4
-6. THE Caller_Script SHALL extract the Server_Public_Key_Fingerprint from the `public_key` field of the validated attestation payload
-7. IF the `public_key` field is null or missing in the attestation payload, THEN THE Caller_Script SHALL fail the workflow step with an error indicating the server did not provide a public key fingerprint
-8. IF the `/attest` endpoint returns an HTTP error status, THEN THE Caller_Script SHALL fail the workflow step with the error details
-9. IF the `/attest` endpoint is unreachable, THEN THE Caller_Script SHALL fail the workflow step with a connection error message
-10. THE Caller_Script SHALL set a configurable timeout for the `/attest` request
-11. THE Caller_Script SHALL verify that the nonce in the validated attestation payload matches the nonce that was sent
+4. THE Caller_Script SHALL generate a unique random nonce for each `/attest` request
+5. WHEN the `/attest` endpoint returns HTTP 200, THE Caller_Script SHALL extract the `attestation_document` field and the `server_public_key` field from the JSON response
+6. THE Caller_Script SHALL validate the Attestation_Document from `/attest` using the same COSE Sign1 parsing, PKI validation, COSE signature verification, and PCR validation as Requirement 4
+7. THE Caller_Script SHALL extract the Server_Public_Key_Fingerprint from the `public_key` field of the validated attestation payload
+8. IF the `public_key` field is null or missing in the attestation payload, THEN THE Caller_Script SHALL fail the workflow step with an error indicating the server did not provide a public key fingerprint
+9. IF the `/attest` endpoint returns an HTTP error status, THEN THE Caller_Script SHALL fail the workflow step with the error details
+10. IF the `/attest` endpoint is unreachable, THEN THE Caller_Script SHALL fail the workflow step with a connection error message
+11. THE Caller_Script SHALL set a configurable timeout for the `/attest` request
+12. THE Caller_Script SHALL verify that the nonce in the validated attestation payload matches the nonce that was sent
 13. IF the `/attest` endpoint returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the request with exponential backoff up to a configurable number of retries before failing with a rate limit error
 
 ##### 11A: Server Public Key Fingerprint Verification
@@ -308,9 +321,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 2. THE Caller_Script SHALL compute the SHA-256 fingerprint of the received composite Server_Public_Key bytes and compare it against the Server_Public_Key_Fingerprint extracted from the attestation document's `public_key` field
 3. IF the `server_public_key` field is null or missing in the `/attest` JSON response, THEN THE Caller_Script SHALL fail the workflow step with an error indicating the server did not provide a composite public key
 4. IF the computed SHA-256 fingerprint does not match the fingerprint in the attestation document, THEN THE Caller_Script SHALL fail the workflow step with an error indicating the server public key does not match the attested fingerprint
-5. THE Caller_Script SHALL parse the verified composite Server_Public_Key to extract the 32-byte X25519 public key and the 1184-byte ML-KEM-768 encapsulation key (each preceded by a 4-byte big-endian length prefix)_Script SHALL set a configurable timeout for the `/attest` request
-11. THE Caller_Script SHALL generate a unique random nonce for each `/attest` request
-12. THE Caller_Script SHALL verify that the nonce in the validated attestation payload matches the nonce that was sent
+5. THE Caller_Script SHALL parse the verified composite Server_Public_Key to extract the 32-byte X25519 public key and the 1184-byte ML-KEM-768 encapsulation key (each preceded by a 4-byte big-endian length prefix)
 
 ### Requirement 12: Client-Side Key Generation
 
@@ -365,6 +376,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 5. THE Caller_Script SHALL deserialize the decrypted bytes as UTF-8 JSON to obtain the response payload dict
 6. IF decryption fails (invalid key, tampered ciphertext, or corrupted nonce), THEN THE Caller_Script SHALL fail the workflow step with a decryption error
 7. IF the decrypted bytes are not valid JSON, THEN THE Caller_Script SHALL fail the workflow step with a deserialization error
+8. THE Caller_Script SHALL enforce a maximum accepted size for base64-encoded `encrypted_response` values and base64-encoded composite Server_Public_Key values before decoding, and reject oversized inputs with a protocol error
 
 ### Requirement 16: Encrypted Communication Flow Orchestration
 
