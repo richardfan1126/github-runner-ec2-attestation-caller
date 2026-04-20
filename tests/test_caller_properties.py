@@ -2833,3 +2833,68 @@ class TestMandatoryAttestationParameters:
         )
         assert caller.root_cert_pem == root_cert_pem
         assert caller.expected_pcrs == {pcr_index: pcr_value}
+
+
+class TestExitCodeValidationOnCompletion:
+    """Property 36: Exit code validation on completion.
+
+    Validates: Requirement 5.12
+    """
+
+    def _setup_caller_with_encryption(self):
+        """Create a caller with encryption initialized (simulating attest())."""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            poll_interval=0,
+            max_poll_duration=9999,
+            audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+        )
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption(caller)
+        return caller, server_enc
+
+    def _make_complete_response(self, server_enc, exit_code):
+        """Build a mock HTTP response with complete=true and the given exit_code."""
+        return _make_encrypted_mock_response(server_enc, {
+            "stdout": "done",
+            "stderr": "",
+            "complete": True,
+            "exit_code": exit_code,
+            "output_attestation_document": None,
+        })
+
+    @given(exit_code=st.integers(min_value=-255, max_value=255))
+    @settings(max_examples=50)
+    def test_integer_exit_codes_are_accepted(self, exit_code: int):
+        """poll_output accepts any integer exit_code when complete=true.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, exit_code)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("test-exec-id")
+
+        assert result["exit_code"] == exit_code
+
+    @given(exit_code=st.one_of(
+        st.just(None),
+        st.text(min_size=0, max_size=10),
+        st.floats(allow_nan=False, allow_infinity=False),
+        st.just(True),
+        st.just(False),
+    ))
+    @settings(max_examples=50)
+    def test_non_integer_exit_codes_raise_caller_error(self, exit_code):
+        """poll_output raises CallerError when exit_code is not a concrete integer on complete=true.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, exit_code)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("test-exec-id")
+
+        assert exc_info.value.phase == "polling"
+        assert "protocol error" in exc_info.value.message.lower() or "exit_code" in exc_info.value.message.lower()

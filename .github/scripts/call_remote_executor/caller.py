@@ -636,6 +636,16 @@ class RemoteExecutorCaller:
                 all_validations_passed = False
 
             if data.get("complete"):
+                # Validate exit_code is a concrete integer (not None, bool, float, or string)
+                if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+                    raise CallerError(
+                        message=(
+                            f"Protocol error: exit_code must be a concrete integer when complete=true, "
+                            f"got {type(exit_code).__name__!r} value {exit_code!r}"
+                        ),
+                        phase="polling",
+                        details={"exit_code": exit_code, "exit_code_type": type(exit_code).__name__},
+                    )
                 if any_attestation_received and all_validations_passed:
                     output_integrity_status = "pass"
                 elif not any_attestation_received:

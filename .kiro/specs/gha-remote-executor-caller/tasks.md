@@ -1385,13 +1385,13 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test all attested fields matching passes without error
     - _Requirements: 3.8, 3.9_
 
-- [ ] 79. Implement exit code validation on completion
-  - [ ] 79.1 Update `poll_output()` in `caller.py` to validate `exit_code` type on completion
+- [x] 79. Implement exit code validation on completion
+  - [x] 79.1 Update `poll_output()` in `caller.py` to validate `exit_code` type on completion
     - When `complete=true`, verify that `exit_code` is a concrete integer (using `isinstance(exit_code, int)` and `not isinstance(exit_code, bool)`)
     - If `exit_code` is `None`, a string, a float, a bool, or any non-integer type, raise `CallerError(phase="polling")` indicating a protocol error
     - _Requirements: 5.12_
 
-  - [ ] 79.2 Write property test for exit code validation on completion
+  - [x] 79.2 Write property test for exit code validation on completion
     - **Property 36: Exit code validation on completion**
     - Generate random integer exit codes — verify `poll_output` accepts them
     - Test `exit_code=None` on `complete=true` raises `CallerError`
@@ -1400,7 +1400,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test `exit_code=True` (bool) raises `CallerError`
     - **Validates: Requirements 5.12**
 
-  - [ ] 79.3 Write unit tests for exit code validation
+  - [x] 79.3 Write unit tests for exit code validation
     - Test `complete=true` with `exit_code=None` raises `CallerError` with protocol error message
     - Test `complete=true` with `exit_code=0` (int) succeeds
     - Test `complete=true` with `exit_code="0"` (string) raises `CallerError`

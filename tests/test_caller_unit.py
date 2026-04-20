@@ -3285,3 +3285,138 @@ class TestMandatoryAttestationParameterValidation:
                 server_url="http://localhost:8080",
                 root_cert_pem="VALID-ROOT-CERT-PEM",
             )
+
+
+class TestExitCodeValidationOnCompletion:
+    """Unit tests for exit_code type validation when complete=true in poll_output.
+    Validates: Requirement 5.12"""
+
+    def _setup_caller_with_encryption(self):
+        """Create a caller with encryption initialized (simulating attest())."""
+        caller = _make_caller()
+        caller._oidc_token = "test-oidc-token"
+        server_enc = _setup_encryption_for_caller(caller)
+        return caller, server_enc
+
+    def _make_complete_response(self, server_enc, exit_code):
+        """Build a mock HTTP response with complete=true and the given exit_code."""
+        encrypted_resp = server_enc.encrypt_payload({
+            "stdout": "done",
+            "stderr": "",
+            "complete": True,
+            "exit_code": exit_code,
+            "output_attestation_document": None,
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+        return mock_resp
+
+    def test_complete_with_none_exit_code_raises_caller_error(self):
+        """complete=true with exit_code=None raises CallerError with protocol error message.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, None)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("exec-1")
+
+        assert exc_info.value.phase == "polling"
+        assert "protocol error" in exc_info.value.message.lower()
+
+    def test_complete_with_integer_exit_code_succeeds(self):
+        """complete=true with exit_code=0 (int) succeeds and returns the exit code.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, 0)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("exec-1")
+
+        assert result["exit_code"] == 0
+
+    def test_complete_with_nonzero_integer_exit_code_succeeds(self):
+        """complete=true with exit_code=1 (int) succeeds and returns the exit code.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, 1)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("exec-1")
+
+        assert result["exit_code"] == 1
+
+    def test_complete_with_string_exit_code_raises_caller_error(self):
+        """complete=true with exit_code="0" (string) raises CallerError with protocol error.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, "0")
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("exec-1")
+
+        assert exc_info.value.phase == "polling"
+        assert "protocol error" in exc_info.value.message.lower()
+
+    def test_complete_with_float_exit_code_raises_caller_error(self):
+        """complete=true with exit_code=0.0 (float) raises CallerError with protocol error.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, 0.0)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("exec-1")
+
+        assert exc_info.value.phase == "polling"
+        assert "protocol error" in exc_info.value.message.lower()
+
+    def test_complete_with_bool_exit_code_raises_caller_error(self):
+        """complete=true with exit_code=True (bool) raises CallerError with protocol error.
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_complete_response(server_enc, True)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("exec-1")
+
+        assert exc_info.value.phase == "polling"
+        assert "protocol error" in exc_info.value.message.lower()
+
+    def test_incomplete_response_with_none_exit_code_does_not_raise(self):
+        """complete=false with exit_code=None does not raise (exit_code not yet available).
+        Validates: Requirement 5.12"""
+        caller, server_enc = self._setup_caller_with_encryption()
+
+        # First response: incomplete with None exit_code (normal mid-execution state)
+        incomplete_encrypted = server_enc.encrypt_payload({
+            "stdout": "running",
+            "stderr": "",
+            "complete": False,
+            "exit_code": None,
+            "output_attestation_document": None,
+        })
+        incomplete_resp = MagicMock()
+        incomplete_resp.status_code = 200
+        incomplete_resp.json.return_value = {"encrypted_response": incomplete_encrypted}
+
+        # Second response: complete with valid integer exit_code
+        complete_encrypted = server_enc.encrypt_payload({
+            "stdout": "done",
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+        complete_resp = MagicMock()
+        complete_resp.status_code = 200
+        complete_resp.json.return_value = {"encrypted_response": complete_encrypted}
+
+        with patch("call_remote_executor.caller.requests.post", side_effect=[incomplete_resp, complete_resp]):
+            with patch("call_remote_executor.caller.time.sleep"):
+                result = caller.poll_output("exec-1")
+
+        assert result["exit_code"] == 0
