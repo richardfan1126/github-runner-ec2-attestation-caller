@@ -19,6 +19,10 @@ from .errors import CallerError
 
 logger = logging.getLogger(__name__)
 
+# Maximum accepted size for base64-encoded attestation documents before decoding.
+# Prevents resource exhaustion from oversized server-supplied blobs (Req 4A.8).
+MAX_ATTESTATION_B64_SIZE = 1_000_000  # 1 MB
+
 EXPECTED_ATTESTATION_FIELDS = [
     "module_id",
     "digest",
@@ -224,6 +228,20 @@ def validate_attestation(
     Returns parsed attestation payload dict.
     Raises CallerError on decode/parse/validation/verification failures.
     """
+    # Enforce maximum size before decoding to prevent resource exhaustion (Req 4A.8)
+    if len(attestation_b64) > MAX_ATTESTATION_B64_SIZE:
+        raise CallerError(
+            message=(
+                f"Attestation document exceeds maximum allowed size "
+                f"({len(attestation_b64)} > {MAX_ATTESTATION_B64_SIZE} bytes)"
+            ),
+            phase="attestation",
+            details={
+                "size": len(attestation_b64),
+                "max_size": MAX_ATTESTATION_B64_SIZE,
+            },
+        )
+
     # Base64-decode the attestation string to binary
     try:
         raw_bytes = base64.b64decode(attestation_b64)
@@ -312,6 +330,20 @@ def validate_output_attestation(
     Returns True if match.
     Raises CallerError on decode/parse failures or digest mismatch.
     """
+    # Enforce maximum size before decoding to prevent resource exhaustion (Req 4A.8)
+    if len(output_attestation_b64) > MAX_ATTESTATION_B64_SIZE:
+        raise CallerError(
+            message=(
+                f"Output attestation document exceeds maximum allowed size "
+                f"({len(output_attestation_b64)} > {MAX_ATTESTATION_B64_SIZE} bytes)"
+            ),
+            phase="output_attestation",
+            details={
+                "size": len(output_attestation_b64),
+                "max_size": MAX_ATTESTATION_B64_SIZE,
+            },
+        )
+
     # Decode base64 → CBOR → COSE_Sign1 (tag 18) 4-element array
     try:
         raw_bytes = base64.b64decode(output_attestation_b64)

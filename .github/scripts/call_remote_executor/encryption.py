@@ -16,6 +16,11 @@ from wolfcrypt.ciphers import MlKemType, MlKemPublic
 from .errors import CallerError
 
 
+# Maximum accepted size for base64-encoded encrypted responses before decoding.
+# Prevents resource exhaustion from oversized server-supplied blobs (Req 15.8).
+MAX_ENCRYPTED_RESPONSE_B64_SIZE = 10_000_000  # 10 MB
+
+
 class ClientEncryption:
     """PQ_Hybrid_KEM encryption helper for the caller side.
 
@@ -207,6 +212,19 @@ class ClientEncryption:
             raise CallerError(
                 message="Cannot decrypt: shared key has not been derived yet",
                 phase="encryption",
+            )
+        # Enforce maximum size before decoding to prevent resource exhaustion (Req 15.8)
+        if len(encrypted_response_b64) > MAX_ENCRYPTED_RESPONSE_B64_SIZE:
+            raise CallerError(
+                message=(
+                    f"Encrypted response exceeds maximum allowed size "
+                    f"({len(encrypted_response_b64)} > {MAX_ENCRYPTED_RESPONSE_B64_SIZE} bytes)"
+                ),
+                phase="encryption",
+                details={
+                    "size": len(encrypted_response_b64),
+                    "max_size": MAX_ENCRYPTED_RESPONSE_B64_SIZE,
+                },
             )
         try:
             wire_bytes = base64.b64decode(encrypted_response_b64)

@@ -1478,37 +1478,37 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test `--max-output-size` CLI argument is parsed correctly
     - _Requirements: 5.15_
 
-- [ ] 83. Implement size limits on protocol fields
-  - [ ] 83.1 Add size limit constants and validation to `attestation.py`
+- [x] 83. Implement size limits on protocol fields
+  - [x] 83.1 Add size limit constants and validation to `attestation.py`
     - Define `MAX_ATTESTATION_B64_SIZE` constant (e.g., 1_000_000 bytes)
     - In `validate_attestation()`, check `len(attestation_b64)` before base64 decoding and reject with `CallerError` if oversized
     - In `validate_output_attestation()`, apply the same size check
     - _Requirements: 4A.8_
 
-  - [ ] 83.2 Add size limit validation to `encryption.py`
+  - [x] 83.2 Add size limit validation to `encryption.py`
     - Define `MAX_ENCRYPTED_RESPONSE_B64_SIZE` constant (e.g., 10_000_000 bytes)
     - In `decrypt_response()`, check `len(encrypted_response_b64)` before base64 decoding and reject with `CallerError` if oversized
     - _Requirements: 15.8_
 
-  - [ ] 83.3 Add size limit validation for composite server public key in `caller.py`
+  - [x] 83.3 Add size limit validation for composite server public key in `caller.py`
     - Define `MAX_SERVER_PUBLIC_KEY_B64_SIZE` constant (e.g., 100_000 bytes)
     - In `attest()`, check `len(server_public_key_b64)` before base64 decoding and reject with `CallerError` if oversized
     - _Requirements: 15.8_
 
-  - [ ] 83.4 Write property test for size limits on protocol fields
+  - [x] 83.4 Write property test for size limits on protocol fields
     - **Property 38: Size limits on protocol fields**
     - Generate oversized base64 strings exceeding each limit — verify rejection before decoding
     - Generate valid-sized inputs — verify they are processed normally
     - **Validates: Requirements 4A.8, 15.8**
 
-  - [ ] 83.5 Write unit tests for size limits on protocol fields
+  - [x] 83.5 Write unit tests for size limits on protocol fields
     - Test oversized attestation document is rejected with protocol error
     - Test oversized encrypted response is rejected with protocol error
     - Test oversized server public key is rejected with protocol error
     - Test valid-sized inputs pass through normally
     - _Requirements: 4A.8, 15.8_
 
-- [ ] 84. Checkpoint - Ensure output size limits and protocol field size limits tests pass
+- [x] 84. Checkpoint - Ensure output size limits and protocol field size limits tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 85. Implement shell injection prevention in workflow YAML

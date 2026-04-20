@@ -3150,3 +3150,107 @@ class TestProperty39OutputSizeLimitsWithTruncation:
 
         assert result["stdout"] == stdout
         assert result["stderr"] == stderr
+
+
+# ---------------------------------------------------------------------------
+# Property 38: Size limits on protocol fields
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 38: Size limits on protocol fields
+# **Validates: Requirements 4A.8, 15.8**
+class TestSizeLimitsOnProtocolFields:
+    """Property 38: Size limits on protocol fields.
+
+    Verifies that oversized base64 strings are rejected before decoding,
+    and that valid-sized inputs are processed normally.
+    """
+
+    @given(
+        excess_bytes=st.integers(min_value=1, max_value=100_000),
+    )
+    @settings(max_examples=20)
+    def test_oversized_attestation_document_rejected(self, excess_bytes: int):
+        """Attestation documents exceeding MAX_ATTESTATION_B64_SIZE are rejected
+        with a CallerError before any decoding is attempted.
+        Validates: Requirement 4A.8"""
+        from call_remote_executor.attestation import MAX_ATTESTATION_B64_SIZE
+
+        # Build a base64 string that exceeds the limit
+        oversized_b64 = "A" * (MAX_ATTESTATION_B64_SIZE + excess_bytes)
+
+        caller = _make_caller()
+        with pytest.raises(CallerError) as exc_info:
+            caller.validate_attestation(oversized_b64)
+        assert exc_info.value.phase == "attestation"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+
+    @given(
+        excess_bytes=st.integers(min_value=1, max_value=100_000),
+    )
+    @settings(max_examples=20)
+    def test_oversized_output_attestation_document_rejected(self, excess_bytes: int):
+        """Output attestation documents exceeding MAX_ATTESTATION_B64_SIZE are rejected
+        with a CallerError before any decoding is attempted.
+        Validates: Requirement 4A.8"""
+        from call_remote_executor.attestation import MAX_ATTESTATION_B64_SIZE
+
+        oversized_b64 = "A" * (MAX_ATTESTATION_B64_SIZE + excess_bytes)
+
+        caller = _make_caller()
+        with pytest.raises(CallerError) as exc_info:
+            caller.validate_output_attestation(
+                oversized_b64,
+                stdout="hello",
+                stderr="",
+                exit_code=0,
+            )
+        assert exc_info.value.phase == "output_attestation"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+
+    @given(
+        excess_bytes=st.integers(min_value=1, max_value=100_000),
+    )
+    @settings(max_examples=20)
+    def test_oversized_encrypted_response_rejected(self, excess_bytes: int):
+        """Encrypted responses exceeding MAX_ENCRYPTED_RESPONSE_B64_SIZE are rejected
+        with a CallerError before any decoding is attempted.
+        Validates: Requirement 15.8"""
+        from call_remote_executor.encryption import MAX_ENCRYPTED_RESPONSE_B64_SIZE
+
+        oversized_b64 = "A" * (MAX_ENCRYPTED_RESPONSE_B64_SIZE + excess_bytes)
+
+        enc = ClientEncryption.__new__(ClientEncryption)
+        enc._shared_key = b"\x00" * 32  # Dummy shared key
+        enc._mlkem_ciphertext = None
+
+        with pytest.raises(CallerError) as exc_info:
+            enc.decrypt_response(oversized_b64)
+        assert exc_info.value.phase == "encryption"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+
+    @given(
+        doc=attestation_doc_strategy(),
+    )
+    @settings(max_examples=20)
+    def test_valid_sized_attestation_document_processed_normally(self, doc: dict):
+        """Attestation documents within MAX_ATTESTATION_B64_SIZE are processed normally
+        (not rejected by the size check).
+        Validates: Requirement 4A.8"""
+        from call_remote_executor.attestation import MAX_ATTESTATION_B64_SIZE
+
+        b64_str = _wrap_cose_sign1(doc)
+        # Confirm the test input is actually within the limit
+        assume(len(b64_str) <= MAX_ATTESTATION_B64_SIZE)
+
+        caller = _make_caller()
+        # Should not raise a size-limit CallerError — may raise for other reasons
+        # (cert chain, signature, etc.) but not for size
+        try:
+            with patch("call_remote_executor.attestation.verify_certificate_chain"), \
+                 patch("call_remote_executor.attestation.verify_cose_signature"), \
+                 patch("call_remote_executor.attestation.validate_pcrs"):
+                result = caller.validate_attestation(b64_str)
+            assert isinstance(result, dict)
+        except CallerError as exc:
+            # Must not be a size-limit error
+            assert "maximum" not in exc.message.lower() or "size" not in exc.message.lower()

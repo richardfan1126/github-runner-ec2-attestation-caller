@@ -3732,3 +3732,145 @@ class TestOutputSizeLimits:
         result = self._poll_with_output(caller, stdout="hello", stderr="world")
         assert result["stdout"] == ""
         assert result["stderr"] == ""
+
+
+class TestSizeLimitsOnProtocolFields:
+    """Unit tests for size limits on protocol fields.
+    Validates: Requirements 4A.8, 15.8"""
+
+    def test_oversized_attestation_document_rejected(self):
+        """Attestation document exceeding MAX_ATTESTATION_B64_SIZE is rejected with a protocol error.
+        Validates: Requirement 4A.8"""
+        from call_remote_executor.attestation import MAX_ATTESTATION_B64_SIZE
+
+        oversized_b64 = "A" * (MAX_ATTESTATION_B64_SIZE + 1)
+        caller = _make_caller()
+        with pytest.raises(CallerError) as exc_info:
+            caller.validate_attestation(oversized_b64)
+        assert exc_info.value.phase == "attestation"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+        assert exc_info.value.details["size"] == MAX_ATTESTATION_B64_SIZE + 1
+        assert exc_info.value.details["max_size"] == MAX_ATTESTATION_B64_SIZE
+
+    def test_oversized_output_attestation_document_rejected(self):
+        """Output attestation document exceeding MAX_ATTESTATION_B64_SIZE is rejected with a protocol error.
+        Validates: Requirement 4A.8"""
+        from call_remote_executor.attestation import MAX_ATTESTATION_B64_SIZE
+
+        oversized_b64 = "A" * (MAX_ATTESTATION_B64_SIZE + 1)
+        caller = _make_caller()
+        with pytest.raises(CallerError) as exc_info:
+            caller.validate_output_attestation(
+                oversized_b64,
+                stdout="hello",
+                stderr="",
+                exit_code=0,
+            )
+        assert exc_info.value.phase == "output_attestation"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+        assert exc_info.value.details["size"] == MAX_ATTESTATION_B64_SIZE + 1
+        assert exc_info.value.details["max_size"] == MAX_ATTESTATION_B64_SIZE
+
+    def test_oversized_encrypted_response_rejected(self):
+        """Encrypted response exceeding MAX_ENCRYPTED_RESPONSE_B64_SIZE is rejected with a protocol error.
+        Validates: Requirement 15.8"""
+        from call_remote_executor.encryption import MAX_ENCRYPTED_RESPONSE_B64_SIZE
+
+        oversized_b64 = "A" * (MAX_ENCRYPTED_RESPONSE_B64_SIZE + 1)
+
+        enc = ClientEncryption.__new__(ClientEncryption)
+        enc._shared_key = b"\x00" * 32
+        enc._mlkem_ciphertext = None
+
+        with pytest.raises(CallerError) as exc_info:
+            enc.decrypt_response(oversized_b64)
+        assert exc_info.value.phase == "encryption"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+        assert exc_info.value.details["size"] == MAX_ENCRYPTED_RESPONSE_B64_SIZE + 1
+        assert exc_info.value.details["max_size"] == MAX_ENCRYPTED_RESPONSE_B64_SIZE
+
+    def test_oversized_server_public_key_rejected(self):
+        """Server public key exceeding MAX_SERVER_PUBLIC_KEY_B64_SIZE is rejected with a protocol error.
+        Validates: Requirement 15.8"""
+        from call_remote_executor.caller import MAX_SERVER_PUBLIC_KEY_B64_SIZE
+
+        oversized_b64 = "A" * (MAX_SERVER_PUBLIC_KEY_B64_SIZE + 1)
+        caller = _make_caller()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "attestation_document": "dGVzdA==",
+            "server_public_key": oversized_b64,
+        }
+
+        with patch("call_remote_executor.caller.requests.get", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.attest()
+        assert exc_info.value.phase == "attest"
+        assert "maximum" in exc_info.value.message.lower() or "size" in exc_info.value.message.lower()
+        assert exc_info.value.details["size"] == MAX_SERVER_PUBLIC_KEY_B64_SIZE + 1
+        assert exc_info.value.details["max_size"] == MAX_SERVER_PUBLIC_KEY_B64_SIZE
+
+    def test_valid_sized_attestation_document_passes_size_check(self):
+        """Attestation document within MAX_ATTESTATION_B64_SIZE passes the size check.
+        Validates: Requirement 4A.8"""
+        from call_remote_executor.attestation import MAX_ATTESTATION_B64_SIZE
+
+        # A small valid-looking base64 string — will fail for other reasons (invalid CBOR),
+        # but must NOT fail with a size-limit error.
+        small_b64 = base64.b64encode(b"not-cbor").decode("ascii")
+        assert len(small_b64) < MAX_ATTESTATION_B64_SIZE
+
+        caller = _make_caller()
+        with pytest.raises(CallerError) as exc_info:
+            caller.validate_attestation(small_b64)
+        # Must fail for a reason other than size
+        assert "maximum" not in exc_info.value.message.lower() or "size" not in exc_info.value.message.lower()
+
+    def test_valid_sized_encrypted_response_passes_size_check(self):
+        """Encrypted response within MAX_ENCRYPTED_RESPONSE_B64_SIZE passes the size check.
+        Validates: Requirement 15.8"""
+        from call_remote_executor.encryption import MAX_ENCRYPTED_RESPONSE_B64_SIZE
+
+        # A small valid-looking base64 string — will fail for other reasons (decryption),
+        # but must NOT fail with a size-limit error.
+        small_b64 = base64.b64encode(b"short").decode("ascii")
+        assert len(small_b64) < MAX_ENCRYPTED_RESPONSE_B64_SIZE
+
+        enc = ClientEncryption.__new__(ClientEncryption)
+        enc._shared_key = b"\x00" * 32
+        enc._mlkem_ciphertext = None
+
+        with pytest.raises(CallerError) as exc_info:
+            enc.decrypt_response(small_b64)
+        # Must fail for a reason other than size
+        assert "maximum" not in exc_info.value.message.lower() or "size" not in exc_info.value.message.lower()
+
+    def test_valid_sized_server_public_key_passes_size_check(self):
+        """Server public key within MAX_SERVER_PUBLIC_KEY_B64_SIZE passes the size check.
+        Validates: Requirement 15.8"""
+        from call_remote_executor.caller import MAX_SERVER_PUBLIC_KEY_B64_SIZE
+
+        # A small valid-looking base64 string — will fail for other reasons (invalid key format),
+        # but must NOT fail with a size-limit error.
+        small_b64 = base64.b64encode(b"short-key").decode("ascii")
+        assert len(small_b64) < MAX_SERVER_PUBLIC_KEY_B64_SIZE
+
+        caller = _make_caller()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "attestation_document": "dGVzdA==",
+            "server_public_key": small_b64,
+        }
+
+        with patch("call_remote_executor.caller.requests.get", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.attest()
+        # Must fail for a reason other than size
+        assert exc_info.value.phase != "attest" or (
+            "maximum" not in exc_info.value.message.lower()
+            and "size" not in exc_info.value.message.lower()
+        )

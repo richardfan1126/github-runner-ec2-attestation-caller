@@ -17,6 +17,10 @@ from . import attestation
 
 logger = logging.getLogger(__name__)
 
+# Maximum accepted size for base64-encoded composite server public keys before decoding.
+# Prevents resource exhaustion from oversized server-supplied blobs (Req 15.8).
+MAX_SERVER_PUBLIC_KEY_B64_SIZE = 100_000  # 100 KB
+
 
 class RemoteExecutorCaller:
     """Client for the Remote Executor server."""
@@ -290,6 +294,19 @@ class RemoteExecutorCaller:
                 message="Attest response missing server_public_key field",
                 phase="attest",
                 details={"response_fields": list(data.keys())},
+            )
+        # Enforce maximum size before decoding to prevent resource exhaustion (Req 15.8)
+        if len(server_public_key_b64) > MAX_SERVER_PUBLIC_KEY_B64_SIZE:
+            raise CallerError(
+                message=(
+                    f"Server public key exceeds maximum allowed size "
+                    f"({len(server_public_key_b64)} > {MAX_SERVER_PUBLIC_KEY_B64_SIZE} bytes)"
+                ),
+                phase="attest",
+                details={
+                    "size": len(server_public_key_b64),
+                    "max_size": MAX_SERVER_PUBLIC_KEY_B64_SIZE,
+                },
             )
         try:
             composite_key_bytes = base64.b64decode(server_public_key_b64)
