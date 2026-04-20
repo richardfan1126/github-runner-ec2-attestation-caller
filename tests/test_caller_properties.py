@@ -395,6 +395,164 @@ class TestExecuteHTTPErrorPropagation:
 
 
 # ---------------------------------------------------------------------------
+# Property 35: Mandatory execution-acceptance attestation with request binding
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 35: Mandatory execution-acceptance attestation with request binding
+# **Validates: Requirements 3.8, 3.9**
+class TestMandatoryExecutionAcceptanceAttestation:
+    """Property 35: Mandatory execution-acceptance attestation with request binding.
+
+    Tests that:
+    - Missing attestation_document in decrypted response raises CallerError
+    - Empty attestation_document raises CallerError
+    - Attested repository_url, commit_hash, script_path matching sent values passes
+    - Any mismatched attested field raises CallerError
+    """
+
+    @given(
+        repository_url=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+        commit_hash=st.text(min_size=1, max_size=64, alphabet=st.characters(whitelist_categories=("L", "N"))),
+        script_path=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+    )
+    @settings(max_examples=30)
+    def test_missing_attestation_document_raises_caller_error(
+        self, repository_url: str, commit_hash: str, script_path: str
+    ):
+        """Missing or empty attestation_document in decrypted /execute response raises CallerError.
+        Validates: Requirement 3.8"""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+        )
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption(caller)
+
+        # Response with no attestation_document key
+        mock_resp_missing = _make_encrypted_mock_response(server_enc, {
+            "execution_id": "exec-1",
+            "status": "queued",
+        })
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp_missing):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute(repository_url, commit_hash, script_path, "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "attestation" in exc_info.value.message.lower()
+
+        # Response with empty string attestation_document
+        mock_resp_empty = _make_encrypted_mock_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "",
+            "status": "queued",
+        })
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp_empty):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute(repository_url, commit_hash, script_path, "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "attestation" in exc_info.value.message.lower()
+
+    @given(
+        repository_url=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+        commit_hash=st.text(min_size=1, max_size=64, alphabet=st.characters(whitelist_categories=("L", "N"))),
+        script_path=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+    )
+    @settings(max_examples=30)
+    def test_matching_attested_fields_passes(
+        self, repository_url: str, commit_hash: str, script_path: str
+    ):
+        """Attested repository_url, commit_hash, script_path matching sent values passes.
+        Validates: Requirement 3.9"""
+        import json as _json
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+        )
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption(caller)
+
+        mock_resp = _make_encrypted_mock_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+
+        # Attestation payload with user_data matching the sent values
+        user_data = _json.dumps({
+            "repository_url": repository_url,
+            "commit_hash": commit_hash,
+            "script_path": script_path,
+        }).encode("utf-8")
+        dummy_payload = {"module_id": "test", "user_data": user_data}
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                result = caller.execute(repository_url, commit_hash, script_path, "ghp_x")
+
+        assert result["execution_id"] == "exec-1"
+
+    @given(
+        repository_url=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+        commit_hash=st.text(min_size=1, max_size=64, alphabet=st.characters(whitelist_categories=("L", "N"))),
+        script_path=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P"))),
+        mismatched_field=st.sampled_from(["repository_url", "commit_hash", "script_path"]),
+        tampered_value=st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N"))),
+    )
+    @settings(max_examples=50)
+    def test_mismatched_attested_field_raises_caller_error(
+        self,
+        repository_url: str,
+        commit_hash: str,
+        script_path: str,
+        mismatched_field: str,
+        tampered_value: str,
+    ):
+        """Any mismatched attested field raises CallerError with phase 'execute'.
+        Validates: Requirement 3.9"""
+        import json as _json
+        from hypothesis import assume
+
+        # Build attested values with one field tampered
+        attested = {
+            "repository_url": repository_url,
+            "commit_hash": commit_hash,
+            "script_path": script_path,
+        }
+        # Ensure the tampered value is actually different from the original
+        assume(tampered_value != attested[mismatched_field])
+        attested[mismatched_field] = tampered_value
+
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+        )
+        caller._oidc_token = "test-token"
+        server_enc = _setup_encryption(caller)
+
+        mock_resp = _make_encrypted_mock_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+
+        user_data = _json.dumps(attested).encode("utf-8")
+        dummy_payload = {"module_id": "test", "user_data": user_data}
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.execute(repository_url, commit_hash, script_path, "ghp_x")
+
+        assert exc_info.value.phase == "execute"
+        assert mismatched_field in exc_info.value.message or "binding" in exc_info.value.message.lower()
+
+
+# ---------------------------------------------------------------------------
 # Property 10: COSE signature rejects tampered payloads
 # ---------------------------------------------------------------------------
 
@@ -1196,7 +1354,7 @@ class TestOIDCTokenTransmission:
 
         mock_response = _make_encrypted_mock_response(server_enc, {
             "execution_id": "test-id",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         })
 
@@ -1207,9 +1365,11 @@ class TestOIDCTokenTransmission:
             captured_payloads.append(dict(payload_dict))
             return original_encrypt(payload_dict)
 
+        dummy_payload = {"module_id": "test", "user_data": None}
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
             with patch("call_remote_executor.caller.requests.post", return_value=mock_response) as mock_post:
-                caller.execute("https://github.com/o/r", "abc", "script.sh", "tok")
+                with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                    caller.execute("https://github.com/o/r", "abc", "script.sh", "tok")
 
         # OIDC token should be in the encrypted payload, not in headers
         assert len(captured_payloads) == 1
@@ -1722,7 +1882,7 @@ class TestEncryptedEnvelopeStructure:
         # Build a mock encrypted response that the server would return
         response_payload = {
             "execution_id": "test-exec-id",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         }
         encrypted_resp = server_enc.encrypt_payload(response_payload)
@@ -1731,8 +1891,10 @@ class TestEncryptedEnvelopeStructure:
         mock_response.status_code = 200
         mock_response.json.return_value = {"encrypted_response": encrypted_resp}
 
+        dummy_payload = {"module_id": "test", "user_data": None}
         with patch("call_remote_executor.caller.requests.post", return_value=mock_response) as mock_post:
-            caller.execute(repository_url, commit_hash, script_path, github_token)
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                caller.execute(repository_url, commit_hash, script_path, github_token)
 
         # Verify the request body structure
         call_kwargs = mock_post.call_args

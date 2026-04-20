@@ -1351,24 +1351,24 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test empty dict `expected_pcrs` raises `CallerError` at construction time
     - _Requirements: 4B.13_
 
-- [ ] 77. Checkpoint - Ensure PKI trust model and mandatory params tests pass
+- [x] 77. Checkpoint - Ensure PKI trust model and mandatory params tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 78. Implement mandatory execution-acceptance attestation with request binding
-  - [ ] 78.1 Update `execute()` in `caller.py` to fail on missing attestation
+- [x] 78. Implement mandatory execution-acceptance attestation with request binding
+  - [x] 78.1 Update `execute()` in `caller.py` to fail on missing attestation
     - After decrypting the `/execute` response, check if `attestation_document` is missing or empty
     - If missing/empty, raise `CallerError(phase="execute")` indicating execution-acceptance attestation is missing
     - Remove the existing conditional `if attestation_b64:` guard — attestation is now mandatory
     - _Requirements: 3.8_
 
-  - [ ] 78.2 Implement request binding verification in `execute()` in `caller.py`
+  - [x] 78.2 Implement request binding verification in `execute()` in `caller.py`
     - After validating the execution-acceptance attestation, parse the `user_data` field from the validated attestation payload
     - Decode `user_data` (bytes → string → JSON) to extract attested `repository_url`, `commit_hash`, and `script_path`
     - Compare each attested field against the values the caller sent in the execution request
     - Raise `CallerError(phase="execute")` if any attested field does not match the sent request values
     - _Requirements: 3.9_
 
-  - [ ] 78.3 Write property test for mandatory execution-acceptance attestation with request binding
+  - [x] 78.3 Write property test for mandatory execution-acceptance attestation with request binding
     - **Property 35: Mandatory execution-acceptance attestation with request binding**
     - Test that missing `attestation_document` in decrypted response raises `CallerError`
     - Test that empty `attestation_document` raises `CallerError`
@@ -1376,7 +1376,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test that any mismatched attested field raises `CallerError`
     - **Validates: Requirements 3.8, 3.9**
 
-  - [ ] 78.4 Write unit tests for execution-acceptance attestation and request binding
+  - [x] 78.4 Write unit tests for execution-acceptance attestation and request binding
     - Test missing `attestation_document` key raises `CallerError` with phase "execute"
     - Test empty string `attestation_document` raises `CallerError` with phase "execute"
     - Test attested `repository_url` mismatch raises `CallerError`

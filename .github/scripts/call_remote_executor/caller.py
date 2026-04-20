@@ -427,19 +427,61 @@ class RemoteExecutorCaller:
         encrypted_response_b64 = data.get("encrypted_response", "")
         decrypted = self._encryption.decrypt_response(encrypted_response_b64)
 
-        # Validate attestation with nonce verification
+        # Execution-acceptance attestation is mandatory (Req 3.8)
         attestation_b64 = decrypted.get("attestation_document", "")
-        if attestation_b64:
-            self.validate_attestation(attestation_b64, expected_nonce=nonce)
+        if not attestation_b64:
+            raise CallerError(
+                message="Execution-acceptance attestation is missing: /execute response did not include an attestation_document",
+                phase="execute",
+                details={"decrypted_keys": list(decrypted.keys())},
+            )
 
-            # Save execution acceptance attestation artifact
-            if self._artifact_collector is not None:
-                self._artifact_collector.save_execution_acceptance(
-                    attestation_b64=attestation_b64,
-                    nonce=nonce,
-                    execution_id=decrypted.get("execution_id", ""),
-                    status=decrypted.get("status", ""),
+        payload_doc = self.validate_attestation(attestation_b64, expected_nonce=nonce)
+
+        # Request binding: verify attested fields match what we sent (Req 3.9)
+        user_data_raw = payload_doc.get("user_data")
+        if user_data_raw is not None:
+            if isinstance(user_data_raw, bytes):
+                user_data_str = user_data_raw.decode("utf-8")
+            else:
+                user_data_str = str(user_data_raw)
+            try:
+                attested = json.loads(user_data_str)
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise CallerError(
+                    message=f"Failed to parse user_data from execution-acceptance attestation: {exc}",
+                    phase="execute",
+                    details={"user_data": user_data_str, "error": str(exc)},
                 )
+            for field in ("repository_url", "commit_hash", "script_path"):
+                sent_value = {
+                    "repository_url": repository_url,
+                    "commit_hash": commit_hash,
+                    "script_path": script_path,
+                }[field]
+                attested_value = attested.get(field)
+                if attested_value != sent_value:
+                    raise CallerError(
+                        message=(
+                            f"Execution-acceptance attestation binding failed: "
+                            f"attested {field!r} ({attested_value!r}) does not match sent value ({sent_value!r})"
+                        ),
+                        phase="execute",
+                        details={
+                            "field": field,
+                            "attested": attested_value,
+                            "sent": sent_value,
+                        },
+                    )
+
+        # Save execution acceptance attestation artifact
+        if self._artifact_collector is not None:
+            self._artifact_collector.save_execution_acceptance(
+                attestation_b64=attestation_b64,
+                nonce=nonce,
+                execution_id=decrypted.get("execution_id", ""),
+                status=decrypted.get("status", ""),
+            )
 
         return decrypted
 

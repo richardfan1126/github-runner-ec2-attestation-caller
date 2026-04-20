@@ -1652,18 +1652,39 @@ class TestEncryptedExecute:
         mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
         return mock_resp
 
+    def _make_dummy_attestation_payload(self, repository_url="https://github.com/o/r", commit_hash="abc", script_path="s.sh"):
+        """Return a dummy attestation payload dict for mocking validate_attestation."""
+        import json as _json
+        user_data = _json.dumps({
+            "repository_url": repository_url,
+            "commit_hash": commit_hash,
+            "script_path": script_path,
+        }).encode("utf-8")
+        return {
+            "module_id": "test",
+            "digest": "SHA384",
+            "timestamp": 1700000000000,
+            "nitrotpm_pcrs": {},
+            "certificate": b"\x00",
+            "cabundle": [],
+            "user_data": user_data,
+            "nonce": b"test-nonce",
+        }
+
     def test_execute_sends_encrypted_envelope_with_both_fields(self):
         """Execute sends JSON with encrypted_payload and client_public_key fields.
         Validates: Requirement 3.1, 14.6"""
         caller, server_enc = self._setup_caller_with_encryption()
         mock_resp = self._make_encrypted_response(server_enc, {
             "execution_id": "exec-1",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         })
 
+        dummy_payload = self._make_dummy_attestation_payload()
         with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
-            caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         sent_json = mock_post.call_args[1]["json"]
         assert "encrypted_payload" in sent_json
@@ -1678,12 +1699,14 @@ class TestEncryptedExecute:
         caller, server_enc = self._setup_caller_with_encryption()
         mock_resp = self._make_encrypted_response(server_enc, {
             "execution_id": "exec-1",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         })
 
+        dummy_payload = self._make_dummy_attestation_payload()
         with patch("call_remote_executor.caller.requests.post", return_value=mock_resp) as mock_post:
-            caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         call_kwargs = mock_post.call_args[1]
         # No headers kwarg at all, or no Authorization in headers
@@ -1696,7 +1719,7 @@ class TestEncryptedExecute:
         caller._oidc_token = "my-special-oidc-jwt"
         mock_resp = self._make_encrypted_response(server_enc, {
             "execution_id": "exec-1",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         })
 
@@ -1707,9 +1730,11 @@ class TestEncryptedExecute:
             captured_payloads.append(dict(payload_dict))
             return original_encrypt(payload_dict)
 
+        dummy_payload = self._make_dummy_attestation_payload()
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
             with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
-                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+                with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                    caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         assert len(captured_payloads) == 1
         assert captured_payloads[0]["oidc_token"] == "my-special-oidc-jwt"
@@ -1720,7 +1745,7 @@ class TestEncryptedExecute:
         caller, server_enc = self._setup_caller_with_encryption()
         mock_resp = self._make_encrypted_response(server_enc, {
             "execution_id": "exec-1",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         })
 
@@ -1731,9 +1756,11 @@ class TestEncryptedExecute:
             captured_payloads.append(dict(payload_dict))
             return original_encrypt(payload_dict)
 
+        dummy_payload = self._make_dummy_attestation_payload()
         with patch.object(caller._encryption, "encrypt_payload", side_effect=capturing_encrypt):
             with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
-                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+                with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                    caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         assert len(captured_payloads) == 1
         assert "nonce" in captured_payloads[0]
@@ -1767,9 +1794,11 @@ class TestEncryptedExecute:
             "status": "queued",
         })
 
+        # validate_attestation returns a payload with no user_data (binding check skipped)
+        dummy_payload = {"module_id": "test", "user_data": None}
         with patch.object(RemoteExecutorCaller, "generate_nonce", return_value=fixed_nonce):
             with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
-                with patch.object(caller, "validate_attestation") as mock_validate:
+                with patch.object(caller, "validate_attestation", return_value=dummy_payload) as mock_validate:
                     caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
 
         # validate_attestation should have been called with the attestation and the nonce
@@ -1784,6 +1813,179 @@ class TestEncryptedExecute:
             caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
         assert exc_info.value.phase == "execute"
         assert "hpke" in exc_info.value.message.lower() or "attest" in exc_info.value.message.lower()
+
+
+class TestMandatoryExecutionAcceptanceAttestation:
+    """Unit tests for mandatory execution-acceptance attestation and request binding.
+    Validates: Requirements 3.8, 3.9"""
+
+    def _setup_caller_with_encryption(self):
+        """Create a caller with encryption initialized (simulating attest())."""
+        caller = _make_caller()
+        caller._oidc_token = "test-oidc-token"
+        server_enc = _setup_encryption_for_caller(caller)
+        return caller, server_enc
+
+    def _make_encrypted_response(self, server_enc, payload_dict):
+        """Build a mock HTTP response with an encrypted response body."""
+        encrypted_resp = server_enc.encrypt_payload(payload_dict)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+        return mock_resp
+
+    def _make_dummy_payload(self, repository_url="https://github.com/o/r", commit_hash="abc", script_path="s.sh"):
+        """Return a dummy attestation payload dict with matching user_data."""
+        import json as _json
+        user_data = _json.dumps({
+            "repository_url": repository_url,
+            "commit_hash": commit_hash,
+            "script_path": script_path,
+        }).encode("utf-8")
+        return {"module_id": "test", "user_data": user_data}
+
+    def test_missing_attestation_document_key_raises_caller_error(self):
+        """Missing attestation_document key in decrypted response raises CallerError with phase 'execute'.
+        Validates: Requirement 3.8"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        # Response has no attestation_document key at all
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "status": "queued",
+        })
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "attestation" in exc_info.value.message.lower()
+
+    def test_empty_string_attestation_document_raises_caller_error(self):
+        """Empty string attestation_document in decrypted response raises CallerError with phase 'execute'.
+        Validates: Requirement 3.8"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "",
+            "status": "queued",
+        })
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "attestation" in exc_info.value.message.lower()
+
+    def test_null_attestation_document_raises_caller_error(self):
+        """Null attestation_document in decrypted response raises CallerError with phase 'execute'.
+        Validates: Requirement 3.8"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": None,
+            "status": "queued",
+        })
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "attestation" in exc_info.value.message.lower()
+
+    def test_all_attested_fields_matching_passes_without_error(self):
+        """All attested fields matching sent values passes without error.
+        Validates: Requirement 3.9"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+        dummy_payload = self._make_dummy_payload(
+            repository_url="https://github.com/o/r",
+            commit_hash="abc",
+            script_path="s.sh",
+        )
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                result = caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert result["execution_id"] == "exec-1"
+
+    def test_attested_repository_url_mismatch_raises_caller_error(self):
+        """Attested repository_url mismatch raises CallerError with phase 'execute'.
+        Validates: Requirement 3.9"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+        # Attestation says different repository_url
+        dummy_payload = self._make_dummy_payload(
+            repository_url="https://github.com/evil/repo",
+            commit_hash="abc",
+            script_path="s.sh",
+        )
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "repository_url" in exc_info.value.message or "binding" in exc_info.value.message.lower()
+
+    def test_attested_commit_hash_mismatch_raises_caller_error(self):
+        """Attested commit_hash mismatch raises CallerError with phase 'execute'.
+        Validates: Requirement 3.9"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+        dummy_payload = self._make_dummy_payload(
+            repository_url="https://github.com/o/r",
+            commit_hash="deadbeef",  # different from "abc"
+            script_path="s.sh",
+        )
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "commit_hash" in exc_info.value.message or "binding" in exc_info.value.message.lower()
+
+    def test_attested_script_path_mismatch_raises_caller_error(self):
+        """Attested script_path mismatch raises CallerError with phase 'execute'.
+        Validates: Requirement 3.9"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+        dummy_payload = self._make_dummy_payload(
+            repository_url="https://github.com/o/r",
+            commit_hash="abc",
+            script_path="scripts/evil.sh",  # different from "s.sh"
+        )
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                with pytest.raises(CallerError) as exc_info:
+                    caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "script_path" in exc_info.value.message or "binding" in exc_info.value.message.lower()
+
+    def test_no_user_data_in_attestation_skips_binding_check(self):
+        """When user_data is None in attestation payload, binding check is skipped gracefully.
+        Validates: Requirement 3.9 (user_data absent means no binding to verify)"""
+        caller, server_enc = self._setup_caller_with_encryption()
+        mock_resp = self._make_encrypted_response(server_enc, {
+            "execution_id": "exec-1",
+            "attestation_document": "dGVzdA==",
+            "status": "queued",
+        })
+        dummy_payload = {"module_id": "test", "user_data": None}
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                result = caller.execute("https://github.com/o/r", "abc", "s.sh", "ghp_x")
+        assert result["execution_id"] == "exec-1"
 
 
 class TestEncryptedPollOutput:
@@ -2749,9 +2951,15 @@ class TestExecuteRateLimiting:
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption_for_caller(caller)
 
+        import json as _json
+        user_data = _json.dumps({
+            "repository_url": "https://github.com/o/r",
+            "commit_hash": "abc",
+            "script_path": "s.sh",
+        }).encode("utf-8")
         encrypted_resp = server_enc.encrypt_payload({
             "execution_id": "exec-1",
-            "attestation_document": "",
+            "attestation_document": "dGVzdA==",
             "status": "queued",
         })
 
@@ -2760,11 +2968,13 @@ class TestExecuteRateLimiting:
         mock_200.status_code = 200
         mock_200.json.return_value = {"encrypted_response": encrypted_resp}
 
+        dummy_payload = {"module_id": "test", "user_data": user_data}
         with patch("call_remote_executor.caller.requests.post", side_effect=[mock_429, mock_200]):
             with patch("call_remote_executor.caller.time.sleep") as mock_sleep:
-                result = caller.execute(
-                    "https://github.com/o/r", "abc", "s.sh", "ghp_x"
-                )
+                with patch.object(caller, "validate_attestation", return_value=dummy_payload):
+                    result = caller.execute(
+                        "https://github.com/o/r", "abc", "s.sh", "ghp_x"
+                    )
 
         assert result["execution_id"] == "exec-1"
         mock_sleep.assert_called_once_with(1)
