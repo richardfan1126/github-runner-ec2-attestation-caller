@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 
 import requests
@@ -631,10 +632,12 @@ class RemoteExecutorCaller:
                     stderr = stderr[:self.max_output_size]
 
             if len(stdout) > prev_stdout_offset:
-                logger.info("stdout: %s", stdout[prev_stdout_offset:])
+                chunk = stdout[prev_stdout_offset:]
+                print(chunk, end="" if chunk.endswith("\n") else "\n", flush=True)
                 prev_stdout_offset = len(stdout)
             if len(stderr) > prev_stderr_offset:
-                logger.info("stderr: %s", stderr[prev_stderr_offset:])
+                chunk = stderr[prev_stderr_offset:]
+                print(chunk, end="" if chunk.endswith("\n") else "\n", file=sys.stderr, flush=True)
                 prev_stderr_offset = len(stderr)
             # Per-poll output attestation validation
             output_attestation_b64 = data.get("output_attestation_document")
