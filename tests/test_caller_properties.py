@@ -3254,3 +3254,198 @@ class TestSizeLimitsOnProtocolFields:
         except CallerError as exc:
             # Must not be a size-limit error
             assert "maximum" not in exc.message.lower() or "size" not in exc.message.lower()
+
+
+# ---------------------------------------------------------------------------
+# Property 40: Concurrency count input validation
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 40: Concurrency count input validation
+# **Validates: Requirements 1.15, 1.16**
+class TestConcurrencyCountInputValidation:
+    """Property 40: Concurrency count input validation.
+
+    Verifies that the workflow's concurrency_count validation logic (regex ^[1-9][0-9]*$)
+    accepts valid positive integers and rejects all invalid inputs.
+    """
+
+    import re as _re
+    _CONCURRENCY_REGEX = _re.compile(r'^[1-9][0-9]*$')
+
+    def _validate_concurrency_count(self, value: str) -> bool:
+        """Simulate the workflow's concurrency_count validation logic."""
+        import re
+        return bool(re.match(r'^[1-9][0-9]*$', value))
+
+    @given(
+        n=st.integers(min_value=1, max_value=10_000),
+    )
+    @settings(max_examples=50)
+    def test_valid_positive_integers_accepted(self, n: int):
+        """Valid positive integers (1, 2, 10, 100, ...) are accepted.
+        Validates: Requirements 1.15, 1.16"""
+        assert self._validate_concurrency_count(str(n)) is True
+
+    @given(
+        value=st.one_of(
+            # Zero
+            st.just("0"),
+            # Negative integers
+            st.integers(max_value=-1).map(str),
+            # Non-numeric strings
+            st.text(
+                alphabet=st.characters(blacklist_categories=("N",), blacklist_characters="-"),
+                min_size=1,
+                max_size=20,
+            ).filter(lambda s: not s.isdigit()),
+            # Floats
+            st.floats(min_value=0.1, max_value=100.0, allow_nan=False, allow_infinity=False)
+            .map(lambda f: f"{f:.1f}"),
+            # Empty string
+            st.just(""),
+            # Leading whitespace
+            st.integers(min_value=1, max_value=100).map(lambda n: f" {n}"),
+            # Trailing whitespace
+            st.integers(min_value=1, max_value=100).map(lambda n: f"{n} "),
+            # Leading zero (e.g. "01", "007")
+            st.integers(min_value=1, max_value=99).map(lambda n: f"0{n}"),
+        )
+    )
+    @settings(max_examples=100)
+    def test_invalid_inputs_rejected(self, value: str):
+        """Invalid inputs (0, negatives, non-numeric, floats, empty, whitespace-padded,
+        leading-zero) are rejected.
+        Validates: Requirements 1.15, 1.16"""
+        assert self._validate_concurrency_count(value) is False
+
+    def test_specific_valid_values(self):
+        """Spot-check specific valid values: '1', '2', '10', '100'.
+        Validates: Requirements 1.15, 1.16"""
+        for v in ("1", "2", "10", "100", "999"):
+            assert self._validate_concurrency_count(v) is True, f"Expected '{v}' to be valid"
+
+    def test_specific_invalid_values(self):
+        """Spot-check specific invalid values: '0', '-1', 'abc', '1.5', '', ' 1', '1 ', '01'.
+        Validates: Requirements 1.15, 1.16"""
+        for v in ("0", "-1", "abc", "1.5", "", " 1", "1 ", "01", "00", "1a", "a1"):
+            assert self._validate_concurrency_count(v) is False, f"Expected '{v}' to be invalid"
+
+
+# ---------------------------------------------------------------------------
+# Property 41: Server URL allowlist filtering
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 41: Server URL allowlist filtering
+# **Validates: Requirement 1.17**
+class TestServerURLAllowlistFiltering:
+    """Property 41: Server URL allowlist filtering.
+
+    Verifies that the workflow's server_url_allowlist validation logic:
+    - Accepts server_url when it is present in the allowlist
+    - Rejects server_url when it is not present in the allowlist
+    - Accepts all server URLs when the allowlist is empty
+    """
+
+    def _check_allowlist(self, server_url: str, allowlist: str) -> bool:
+        """Simulate the workflow's allowlist validation logic.
+
+        Returns True if server_url is permitted (allowlist empty or URL in list).
+        Mirrors the shell logic: split on comma, strip whitespace, compare.
+        """
+        if not allowlist.strip():
+            return True  # Empty allowlist: accept all
+        permitted = [u.strip() for u in allowlist.split(",")]
+        return server_url in permitted
+
+    @given(
+        server_url=st.text(
+            alphabet=st.characters(whitelist_categories=("L", "N", "P", "S")),
+            min_size=1,
+            max_size=100,
+        ).filter(lambda s: s.strip() == s and "," not in s),
+        extra_urls=st.lists(
+            st.text(
+                alphabet=st.characters(whitelist_categories=("L", "N", "P", "S")),
+                min_size=1,
+                max_size=100,
+            ).filter(lambda s: s.strip() == s and "," not in s),
+            min_size=0,
+            max_size=5,
+        ),
+    )
+    @settings(max_examples=50)
+    def test_server_url_in_allowlist_accepted(self, server_url: str, extra_urls: list):
+        """server_url present in the allowlist is accepted.
+        Validates: Requirement 1.17"""
+        all_urls = [server_url] + extra_urls
+        allowlist = ", ".join(all_urls)
+        assert self._check_allowlist(server_url, allowlist) is True
+
+    @given(
+        server_url=st.text(
+            alphabet=st.characters(whitelist_categories=("L", "N", "P")),
+            min_size=1,
+            max_size=100,
+        ).filter(lambda s: s.strip() == s and "," not in s),
+        other_urls=st.lists(
+            st.text(
+                alphabet=st.characters(whitelist_categories=("L", "N", "P")),
+                min_size=1,
+                max_size=100,
+            ).filter(lambda s: s.strip() == s and "," not in s),
+            min_size=1,
+            max_size=5,
+        ),
+    )
+    @settings(max_examples=50)
+    def test_server_url_not_in_allowlist_rejected(self, server_url: str, other_urls: list):
+        """server_url not present in the allowlist is rejected.
+        Validates: Requirement 1.17"""
+        # Ensure server_url is not in other_urls
+        assume(server_url not in other_urls)
+        allowlist = ", ".join(other_urls)
+        assert self._check_allowlist(server_url, allowlist) is False
+
+    @given(
+        server_url=st.text(
+            alphabet=st.characters(whitelist_categories=("L", "N", "P", "S")),
+            min_size=1,
+            max_size=200,
+        ),
+    )
+    @settings(max_examples=50)
+    def test_empty_allowlist_accepts_all_urls(self, server_url: str):
+        """Empty allowlist accepts any server_url.
+        Validates: Requirement 1.17"""
+        assert self._check_allowlist(server_url, "") is True
+        assert self._check_allowlist(server_url, "   ") is True
+
+    def test_specific_allowlist_scenarios(self):
+        """Spot-check specific allowlist scenarios.
+        Validates: Requirement 1.17"""
+        # URL in single-entry allowlist
+        assert self._check_allowlist(
+            "https://executor.example.com",
+            "https://executor.example.com",
+        ) is True
+
+        # URL in multi-entry allowlist
+        assert self._check_allowlist(
+            "https://executor-2.example.com",
+            "https://executor-1.example.com, https://executor-2.example.com",
+        ) is True
+
+        # URL not in allowlist
+        assert self._check_allowlist(
+            "https://evil.example.com",
+            "https://executor.example.com",
+        ) is False
+
+        # Empty allowlist accepts all
+        assert self._check_allowlist("https://any.example.com", "") is True
+
+        # Partial match is not a match (no substring matching)
+        assert self._check_allowlist(
+            "https://executor.example.com/extra",
+            "https://executor.example.com",
+        ) is False

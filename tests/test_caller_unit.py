@@ -3874,3 +3874,93 @@ class TestSizeLimitsOnProtocolFields:
             "maximum" not in exc_info.value.message.lower()
             and "size" not in exc_info.value.message.lower()
         )
+
+
+class TestWorkflowInputValidation:
+    """Unit tests for workflow YAML input validation logic.
+    Validates: Requirements 1.15, 1.16, 1.17"""
+
+    WORKFLOW_PATH = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        ".github",
+        "workflows",
+        "call-remote-executor.yml",
+    )
+
+    def _load_workflow(self) -> str:
+        with open(self.WORKFLOW_PATH) as f:
+            return f.read()
+
+    def test_workflow_validates_concurrency_count_via_regex(self):
+        """Workflow YAML validates concurrency_count using the regex ^[1-9][0-9]*$.
+        Validates: Requirement 1.15"""
+        content = self._load_workflow()
+        assert "^[1-9][0-9]*$" in content, (
+            "Workflow must validate concurrency_count with regex ^[1-9][0-9]*$"
+        )
+
+    def test_workflow_passes_concurrency_count_via_env_var(self):
+        """Workflow YAML passes concurrency_count through an environment variable,
+        not via direct ${{ inputs.concurrency_count }} shell interpolation in run steps.
+        Validates: Requirement 1.16"""
+        content = self._load_workflow()
+        # The env var assignment must be present
+        assert "CONCURRENCY_COUNT: ${{ inputs.concurrency_count }}" in content, (
+            "Workflow must assign concurrency_count to CONCURRENCY_COUNT env var"
+        )
+        # Shell code must use $CONCURRENCY_COUNT, not ${{ inputs.concurrency_count }}
+        # in run: blocks (the expression is only allowed in env: blocks)
+        import re
+        # Find all run: blocks and check they don't interpolate concurrency_count directly
+        run_blocks = re.findall(r'run:\s*\|([^-]+?)(?=\n\s{4,6}\w|\Z)', content, re.DOTALL)
+        for block in run_blocks:
+            assert "${{ inputs.concurrency_count }}" not in block, (
+                "Shell run blocks must not interpolate ${{ inputs.concurrency_count }} directly; "
+                "use $CONCURRENCY_COUNT env var instead"
+            )
+
+    def test_workflow_contains_server_url_allowlist_input(self):
+        """Workflow YAML contains server_url_allowlist input definition.
+        Validates: Requirement 1.17"""
+        content = self._load_workflow()
+        assert "server_url_allowlist" in content, (
+            "Workflow must define server_url_allowlist input"
+        )
+
+    def test_workflow_rejects_server_url_not_in_allowlist(self):
+        """Workflow YAML contains logic to reject server_url not in allowlist.
+        Validates: Requirement 1.17"""
+        content = self._load_workflow()
+        # The workflow must reference SERVER_URL_ALLOWLIST in a validation context
+        assert "SERVER_URL_ALLOWLIST" in content, (
+            "Workflow must use SERVER_URL_ALLOWLIST env var for allowlist validation"
+        )
+        # Must contain an error message about the allowlist
+        assert "allowlist" in content.lower(), (
+            "Workflow must emit an error message referencing the allowlist"
+        )
+
+    def test_workflow_allowlist_validation_uses_env_var(self):
+        """Workflow YAML passes server_url_allowlist through an environment variable.
+        Validates: Requirement 1.17"""
+        content = self._load_workflow()
+        assert "SERVER_URL_ALLOWLIST: ${{ inputs.server_url_allowlist }}" in content, (
+            "Workflow must assign server_url_allowlist to SERVER_URL_ALLOWLIST env var"
+        )
+
+    def test_workflow_concurrency_count_error_message_is_clear(self):
+        """Workflow YAML emits a clear error message when concurrency_count is invalid.
+        Validates: Requirement 1.15"""
+        content = self._load_workflow()
+        assert "concurrency_count must be a positive integer" in content, (
+            "Workflow must emit a clear error message for invalid concurrency_count"
+        )
+
+    def test_workflow_allowlist_error_message_is_clear(self):
+        """Workflow YAML emits a clear error message when server_url is not in allowlist.
+        Validates: Requirement 1.17"""
+        content = self._load_workflow()
+        assert "not in the configured server_url_allowlist" in content, (
+            "Workflow must emit a clear error message when server_url is not in allowlist"
+        )

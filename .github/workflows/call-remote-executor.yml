@@ -32,6 +32,11 @@ on:
         required: false
         default: "1"
         type: string
+      server_url_allowlist:
+        description: "Comma-separated list of permitted server URLs (leave empty to allow all)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   id-token: write
@@ -69,10 +74,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate inputs
+        env:
+          CONCURRENCY_COUNT: ${{ inputs.concurrency_count }}
+          SERVER_URL: ${{ inputs.server_url }}
+          SERVER_URL_ALLOWLIST: ${{ inputs.server_url_allowlist }}
         run: |
-          if [ -z "${{ inputs.server_url }}" ]; then
+          if [ -z "$SERVER_URL" ]; then
             echo "::error::server_url input is required and cannot be empty"
             exit 1
+          fi
+
+          # Validate concurrency_count is a strict positive integer
+          if [ -n "$CONCURRENCY_COUNT" ] && ! echo "$CONCURRENCY_COUNT" | grep -qE '^[1-9][0-9]*$'; then
+            echo "::error::concurrency_count must be a positive integer (got: '$CONCURRENCY_COUNT')"
+            exit 1
+          fi
+
+          # Validate server_url against allowlist when configured
+          if [ -n "$SERVER_URL_ALLOWLIST" ]; then
+            ALLOWED=false
+            IFS=',' read -ra URLS <<< "$SERVER_URL_ALLOWLIST"
+            for url in "${URLS[@]}"; do
+              trimmed="${url#"${url%%[![:space:]]*}"}"
+              trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+              if [ "$trimmed" = "$SERVER_URL" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+            if [ "$ALLOWED" = "false" ]; then
+              echo "::error::server_url '$SERVER_URL' is not in the configured server_url_allowlist"
+              exit 1
+            fi
           fi
 
       - name: Checkout repository
@@ -117,11 +150,47 @@ jobs:
     outputs:
       matrix: ${{ steps.generate.outputs.matrix }}
     steps:
+      - name: Validate inputs
+        env:
+          CONCURRENCY_COUNT: ${{ inputs.concurrency_count }}
+          SERVER_URL: ${{ inputs.server_url }}
+          SERVER_URL_ALLOWLIST: ${{ inputs.server_url_allowlist }}
+        run: |
+          if [ -z "$SERVER_URL" ]; then
+            echo "::error::server_url input is required and cannot be empty"
+            exit 1
+          fi
+
+          # Validate concurrency_count is a strict positive integer (required for matrix path)
+          if ! echo "$CONCURRENCY_COUNT" | grep -qE '^[1-9][0-9]*$'; then
+            echo "::error::concurrency_count must be a positive integer (got: '$CONCURRENCY_COUNT')"
+            exit 1
+          fi
+
+          # Validate server_url against allowlist when configured
+          if [ -n "$SERVER_URL_ALLOWLIST" ]; then
+            ALLOWED=false
+            IFS=',' read -ra URLS <<< "$SERVER_URL_ALLOWLIST"
+            for url in "${URLS[@]}"; do
+              trimmed="${url#"${url%%[![:space:]]*}"}"
+              trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+              if [ "$trimmed" = "$SERVER_URL" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+            if [ "$ALLOWED" = "false" ]; then
+              echo "::error::server_url '$SERVER_URL' is not in the configured server_url_allowlist"
+              exit 1
+            fi
+          fi
+
       - name: Generate matrix indices
         id: generate
+        env:
+          CONCURRENCY_COUNT: ${{ inputs.concurrency_count }}
         run: |
-          count=${{ inputs.concurrency_count }}
-          indices=$(python3 -c "import json; print(json.dumps(list(range(1, int('$count') + 1))))")
+          indices=$(python3 -c "import json; print(json.dumps(list(range(1, int('$CONCURRENCY_COUNT') + 1))))")
           echo "matrix={\"index\":$indices}" >> "$GITHUB_OUTPUT"
 
   execute:
@@ -132,8 +201,10 @@ jobs:
       matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
     steps:
       - name: Validate inputs
+        env:
+          SERVER_URL: ${{ inputs.server_url }}
         run: |
-          if [ -z "${{ inputs.server_url }}" ]; then
+          if [ -z "$SERVER_URL" ]; then
             echo "::error::server_url input is required and cannot be empty"
             exit 1
           fi

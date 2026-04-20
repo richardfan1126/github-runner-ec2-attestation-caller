@@ -1511,35 +1511,35 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 84. Checkpoint - Ensure output size limits and protocol field size limits tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 85. Implement shell injection prevention in workflow YAML
-  - [ ] 85.1 Add `concurrency_count` input validation step to workflow YAML
+- [x] 85. Implement shell injection prevention in workflow YAML
+  - [x] 85.1 Add `concurrency_count` input validation step to workflow YAML
     - Add a validation step in the `prepare-matrix` job that validates `concurrency_count` matches regex `^[1-9][0-9]*$`
     - Pass `concurrency_count` through an environment variable (e.g., `env: CONCURRENCY_COUNT: ${{ inputs.concurrency_count }}`) instead of direct `${{ inputs.concurrency_count }}` shell interpolation
     - Use the environment variable `$CONCURRENCY_COUNT` in shell code instead of the expression
     - Fail with a clear error message if the value does not match the regex
     - _Requirements: 1.15, 1.16_
 
-  - [ ] 85.2 Add `server_url_allowlist` input and validation to workflow YAML
+  - [x] 85.2 Add `server_url_allowlist` input and validation to workflow YAML
     - Add optional `server_url_allowlist` input to `workflow_dispatch` inputs (comma-separated string)
     - Add a validation step that checks if `server_url` is in the allowlist when the allowlist is configured (non-empty)
     - Reject `server_url` not in the allowlist with a clear error message
     - When the allowlist is empty/absent, accept all server URLs
     - _Requirements: 1.17_
 
-  - [ ] 85.3 Write property test for concurrency count input validation
+  - [x] 85.3 Write property test for concurrency count input validation
     - **Property 40: Concurrency count input validation**
     - Test valid positive integers ("1", "2", "10", "100") are accepted
     - Test invalid inputs ("0", "-1", "abc", "1.5", "", " 1", "1 ", "01") are rejected
     - **Validates: Requirements 1.15, 1.16**
 
-  - [ ] 85.4 Write property test for server URL allowlist filtering
+  - [x] 85.4 Write property test for server URL allowlist filtering
     - **Property 41: Server URL allowlist filtering**
     - Test `server_url` in allowlist is accepted
     - Test `server_url` not in allowlist is rejected
     - Test empty allowlist accepts all URLs
     - **Validates: Requirements 1.17**
 
-  - [ ] 85.5 Write unit tests for workflow input validation
+  - [x] 85.5 Write unit tests for workflow input validation
     - Test workflow YAML validates `concurrency_count` via regex before shell use
     - Test workflow YAML passes `concurrency_count` via environment variable, not direct interpolation
     - Test workflow YAML contains `server_url_allowlist` input
