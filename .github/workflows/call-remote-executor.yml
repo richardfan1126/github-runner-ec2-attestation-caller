@@ -64,7 +64,7 @@ env:
   # Expected PCR values for the attestable AMI (PCR4 and PCR7)
   EXPECTED_PCRS: |
     {
-      "4": "a5667ce29b1937ac6384459fa063c5815dc94f4a5a09dd539b31cc270a3ca8948ccdc44bdf3069ab64c838025cc20bc2",
+      "4": "4c722b6f490f26b1e90ab2c202b9d6a9c9b88d1bfa8af5d821e0c9340da56eb4eab7047da6de62b297d717a4288d0866",
       "7": "98441c7f7625d10058c47683aec486ce311c633235eb555593a7ee791121e3578ae72d04ecef661f272d59058b77af35"
     }
 
