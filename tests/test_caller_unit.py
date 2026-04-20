@@ -3563,3 +3563,172 @@ class TestFailClosedOutputAttestationOnFinalPoll:
             allow_missing_output_attestation=True,
         )
         assert caller.allow_missing_output_attestation is True
+
+
+# ---------------------------------------------------------------------------
+# Tests for output size limits (Task 82.5)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputSizeLimits:
+    """Unit tests for output size limit enforcement in poll_output.
+    Validates: Requirement 5.15"""
+
+    def _make_caller_with_limit(self, max_output_size: int | None) -> RemoteExecutorCaller:
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+            poll_interval=0,
+            max_poll_duration=9999,
+            allow_missing_output_attestation=True,
+            max_output_size=max_output_size,
+        )
+        caller._oidc_token = "test-oidc-token"
+        return caller
+
+    def _poll_with_output(self, caller, stdout: str, stderr: str) -> dict:
+        """Run poll_output with a single complete response containing the given output."""
+        server_enc = _setup_encryption_for_caller(caller)
+        encrypted_resp = server_enc.encrypt_payload({
+            "stdout": stdout,
+            "stderr": stderr,
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            return caller.poll_output("test-exec-id")
+
+    def test_stdout_exceeding_limit_is_truncated(self):
+        """stdout exceeding max_output_size is truncated to the limit.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(10)
+        result = self._poll_with_output(caller, stdout="A" * 50, stderr="")
+        assert result["stdout"] == "A" * 10
+        assert len(result["stdout"]) == 10
+
+    def test_stderr_exceeding_limit_is_truncated(self):
+        """stderr exceeding max_output_size is truncated to the limit.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(10)
+        result = self._poll_with_output(caller, stdout="", stderr="B" * 50)
+        assert result["stderr"] == "B" * 10
+        assert len(result["stderr"]) == 10
+
+    def test_output_within_limit_is_not_truncated(self):
+        """Output within max_output_size is returned unchanged.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(100)
+        result = self._poll_with_output(caller, stdout="hello", stderr="world")
+        assert result["stdout"] == "hello"
+        assert result["stderr"] == "world"
+
+    def test_max_output_size_none_does_not_truncate(self):
+        """max_output_size=None (default) does not truncate any output.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(None)
+        long_stdout = "X" * 10_000
+        long_stderr = "Y" * 10_000
+        result = self._poll_with_output(caller, stdout=long_stdout, stderr=long_stderr)
+        assert result["stdout"] == long_stdout
+        assert result["stderr"] == long_stderr
+
+    def test_truncation_logs_warning_for_stdout(self):
+        """Truncating stdout logs a warning message.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(5)
+        server_enc = _setup_encryption_for_caller(caller)
+        encrypted_resp = server_enc.encrypt_payload({
+            "stdout": "A" * 100,
+            "stderr": "",
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.logger") as mock_logger:
+                caller.poll_output("test-exec-id")
+
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("stdout" in c.lower() and "truncat" in c.lower() for c in warning_calls), (
+            f"Expected stdout truncation warning, got: {warning_calls}"
+        )
+
+    def test_truncation_logs_warning_for_stderr(self):
+        """Truncating stderr logs a warning message.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(5)
+        server_enc = _setup_encryption_for_caller(caller)
+        encrypted_resp = server_enc.encrypt_payload({
+            "stdout": "",
+            "stderr": "B" * 100,
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"encrypted_response": encrypted_resp}
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.logger") as mock_logger:
+                caller.poll_output("test-exec-id")
+
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("stderr" in c.lower() and "truncat" in c.lower() for c in warning_calls), (
+            f"Expected stderr truncation warning, got: {warning_calls}"
+        )
+
+    def test_max_output_size_default_is_none(self):
+        """RemoteExecutorCaller.max_output_size defaults to None (no limit).
+        Validates: Requirement 5.15"""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+        )
+        assert caller.max_output_size is None
+
+    def test_max_output_size_stored_correctly(self):
+        """RemoteExecutorCaller stores max_output_size correctly.
+        Validates: Requirement 5.15"""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+            max_output_size=1024,
+        )
+        assert caller.max_output_size == 1024
+
+    def test_max_output_size_cli_argument_parsed_correctly(self):
+        """--max-output-size CLI argument is parsed as an integer.
+        Validates: Requirement 5.15"""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--max-output-size", type=int, default=None)
+
+        # Without the flag: should be None
+        args_without = parser.parse_args([])
+        assert args_without.max_output_size is None
+
+        # With the flag: should be the integer value
+        args_with = parser.parse_args(["--max-output-size", "4096"])
+        assert args_with.max_output_size == 4096
+
+    def test_zero_limit_truncates_all_output(self):
+        """max_output_size=0 truncates all output to empty strings.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(0)
+        result = self._poll_with_output(caller, stdout="hello", stderr="world")
+        assert result["stdout"] == ""
+        assert result["stderr"] == ""

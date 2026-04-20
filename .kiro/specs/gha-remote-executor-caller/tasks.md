@@ -1444,25 +1444,25 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 81. Checkpoint - Ensure execution attestation, exit code, and fail-closed tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 82. Implement output size limits
-  - [ ] 82.1 Update `RemoteExecutorCaller.__init__` to accept `max_output_size` parameter
+- [x] 82. Implement output size limits
+  - [x] 82.1 Update `RemoteExecutorCaller.__init__` to accept `max_output_size` parameter
     - Add `max_output_size: int | None = None` parameter
     - Store as instance attribute
     - _Requirements: 5.15_
 
-  - [ ] 82.2 Update `poll_output()` in `caller.py` to enforce output size limits
+  - [x] 82.2 Update `poll_output()` in `caller.py` to enforce output size limits
     - After decrypting each poll response, if `max_output_size` is configured:
       - Check if `len(stdout)` or `len(stderr)` exceeds `max_output_size`
       - Truncate oversized output to `max_output_size` bytes before logging, summarizing, or persisting
       - Log a warning when truncation occurs
     - _Requirements: 5.15_
 
-  - [ ] 82.3 Update `cli.py` to add `--max-output-size` CLI argument
+  - [x] 82.3 Update `cli.py` to add `--max-output-size` CLI argument
     - Add `--max-output-size` optional argument (integer, default None)
     - Pass the value to `RemoteExecutorCaller.__init__`
     - _Requirements: 5.15_
 
-  - [ ] 82.4 Write property test for output size limits with truncation
+  - [x] 82.4 Write property test for output size limits with truncation
     - **Property 39: Output size limits with truncation**
     - Generate random stdout/stderr strings of varying sizes
     - Configure `max_output_size` to a value smaller than some strings
@@ -1470,7 +1470,7 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify output within the limit is preserved unchanged
     - **Validates: Requirements 5.15**
 
-  - [ ] 82.5 Write unit tests for output size limits
+  - [x] 82.5 Write unit tests for output size limits
     - Test stdout exceeding `max_output_size` is truncated
     - Test stderr exceeding `max_output_size` is truncated
     - Test output within limit is not truncated

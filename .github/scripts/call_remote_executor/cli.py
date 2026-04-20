@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--audience", default="", help="Audience value for OIDC token request")
     parser.add_argument("--attestation-output-dir", default="attestation-documents", help="Directory for saving attestation artifact files")
     parser.add_argument("--allow-missing-output-attestation", action="store_true", default=False, help="Allow run to continue when output attestation is absent (degraded mode)")
+    parser.add_argument("--max-output-size", type=int, default=None, help="Maximum accepted size in bytes for stdout/stderr output (truncates oversized output)")
 
     args = parser.parse_args()
 
@@ -50,6 +51,7 @@ def main():
         audience=args.audience,
         attestation_output_dir=args.attestation_output_dir,
         allow_missing_output_attestation=args.allow_missing_output_attestation,
+        max_output_size=args.max_output_size,
     )
 
     try:

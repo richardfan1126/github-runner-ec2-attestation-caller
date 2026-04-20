@@ -33,6 +33,7 @@ class RemoteExecutorCaller:
         audience: str = "",
         attestation_output_dir: str | None = None,
         allow_missing_output_attestation: bool = False,
+        max_output_size: int | None = None,
     ):
         if not root_cert_pem:
             raise CallerError(
@@ -56,6 +57,7 @@ class RemoteExecutorCaller:
         self.audience = audience
         self._oidc_token: str | None = None
         self.allow_missing_output_attestation = allow_missing_output_attestation
+        self.max_output_size = max_output_size
         self._artifact_collector: AttestationArtifactCollector | None = (
             AttestationArtifactCollector(attestation_output_dir)
             if attestation_output_dir is not None
@@ -595,13 +597,28 @@ class RemoteExecutorCaller:
             stdout = data.get("stdout", "")
             stderr = data.get("stderr", "")
             exit_code = data.get("exit_code")
+
+            # Enforce caller-side output size limit (Req 5.15)
+            if self.max_output_size is not None:
+                if len(stdout) > self.max_output_size:
+                    logger.warning(
+                        "stdout truncated from %d to %d bytes (max_output_size limit)",
+                        len(stdout), self.max_output_size,
+                    )
+                    stdout = stdout[:self.max_output_size]
+                if len(stderr) > self.max_output_size:
+                    logger.warning(
+                        "stderr truncated from %d to %d bytes (max_output_size limit)",
+                        len(stderr), self.max_output_size,
+                    )
+                    stderr = stderr[:self.max_output_size]
+
             if len(stdout) > prev_stdout_offset:
                 logger.info("stdout: %s", stdout[prev_stdout_offset:])
                 prev_stdout_offset = len(stdout)
             if len(stderr) > prev_stderr_offset:
                 logger.info("stderr: %s", stderr[prev_stderr_offset:])
                 prev_stderr_offset = len(stderr)
-
             # Per-poll output attestation validation
             output_attestation_b64 = data.get("output_attestation_document")
             if output_attestation_b64:

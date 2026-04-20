@@ -3038,3 +3038,115 @@ class TestFailClosedOutputAttestationOnFinalPoll:
         assert mock_validate.call_count == 1
         # Result should be returned successfully
         assert result["exit_code"] == exit_code
+
+
+# ---------------------------------------------------------------------------
+# Property 39: Output size limits with truncation (Task 82.4)
+# ---------------------------------------------------------------------------
+
+
+class TestProperty39OutputSizeLimitsWithTruncation:
+    """Property 39: Output size limits with truncation.
+    Validates: Requirement 5.15"""
+
+    def _make_caller_with_limit(self, max_output_size: int | None) -> RemoteExecutorCaller:
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+            poll_interval=0,
+            max_poll_duration=9999,
+            allow_missing_output_attestation=True,
+            max_output_size=max_output_size,
+        )
+        caller._oidc_token = "test-oidc-token"
+        return caller
+
+    @given(
+        stdout=st.text(min_size=0, max_size=200),
+        stderr=st.text(min_size=0, max_size=200),
+        limit=st.integers(min_value=0, max_value=100),
+    )
+    @settings(max_examples=50)
+    def test_oversized_output_is_truncated_to_limit(
+        self, stdout: str, stderr: str, limit: int
+    ):
+        """Output exceeding max_output_size is truncated to exactly max_output_size bytes.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(limit)
+        server_enc = _setup_encryption(caller)
+
+        mock_resp = _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout,
+            "stderr": stderr,
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("test-exec-id")
+
+        # Truncation must not exceed the limit
+        assert len(result["stdout"]) <= limit
+        assert len(result["stderr"]) <= limit
+
+        # Content within the limit must be preserved (prefix of original)
+        assert result["stdout"] == stdout[:limit]
+        assert result["stderr"] == stderr[:limit]
+
+    @given(
+        stdout=st.text(min_size=0, max_size=50),
+        stderr=st.text(min_size=0, max_size=50),
+        limit=st.integers(min_value=200, max_value=500),
+    )
+    @settings(max_examples=30)
+    def test_output_within_limit_is_preserved_unchanged(
+        self, stdout: str, stderr: str, limit: int
+    ):
+        """Output within max_output_size is preserved unchanged.
+        Validates: Requirement 5.15"""
+        # Ensure both outputs are within the limit
+        assume(len(stdout) <= limit and len(stderr) <= limit)
+
+        caller = self._make_caller_with_limit(limit)
+        server_enc = _setup_encryption(caller)
+
+        mock_resp = _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout,
+            "stderr": stderr,
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("test-exec-id")
+
+        assert result["stdout"] == stdout
+        assert result["stderr"] == stderr
+
+    @given(
+        stdout=st.text(min_size=0, max_size=200),
+        stderr=st.text(min_size=0, max_size=200),
+    )
+    @settings(max_examples=30)
+    def test_no_limit_preserves_all_output(self, stdout: str, stderr: str):
+        """max_output_size=None (default) does not truncate any output.
+        Validates: Requirement 5.15"""
+        caller = self._make_caller_with_limit(None)
+        server_enc = _setup_encryption(caller)
+
+        mock_resp = _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout,
+            "stderr": stderr,
+            "complete": True,
+            "exit_code": 0,
+            "output_attestation_document": None,
+        })
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            result = caller.poll_output("test-exec-id")
+
+        assert result["stdout"] == stdout
+        assert result["stderr"] == stderr
