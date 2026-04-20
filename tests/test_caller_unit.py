@@ -762,27 +762,32 @@ class TestWorkflowValidation:
     def test_empty_server_url_raises_error(self):
         """The caller script must reject an empty --server-url.
         Validates: Requirement 1.5"""
-        script = os.path.join(
+        import tempfile
+        # Use the package invocation (task 48 migrated from single-file to package)
+        package_dir = os.path.join(
             os.path.dirname(__file__),
             "..",
             ".github",
             "scripts",
-            "call_remote_executor.py",
+            "call_remote_executor",
         )
-        result = subprocess.run(
-            [
-                "python",
-                script,
-                "--server-url",
-                "",
-                "--root-cert-pem",
-                "dummy",
-                "--expected-pcrs",
-                '{"4":"aa","7":"bb"}',
-            ],
-            capture_output=True,
-            text=True,
-        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = subprocess.run(
+                [
+                    "python",
+                    package_dir,
+                    "--server-url",
+                    "",
+                    "--root-cert-pem",
+                    "dummy",
+                    "--expected-pcrs",
+                    '{"4":"aa","7":"bb"}',
+                    "--attestation-output-dir",
+                    tmp_dir,
+                ],
+                capture_output=True,
+                text=True,
+            )
         # argparse treats empty string as provided, but the workflow validates
         # non-empty before invoking the script. The script itself should still
         # fail when it tries to connect to an empty URL.

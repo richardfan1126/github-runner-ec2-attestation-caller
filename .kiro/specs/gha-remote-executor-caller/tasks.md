@@ -1575,19 +1575,19 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - [x] 87. Checkpoint - Ensure shell injection prevention and Markdown escaping tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 88. Update existing tests for compatibility with all security hardening changes
-  - [ ] 88.1 Update existing tests in `test_caller_unit.py` for new constructor parameters
+- [x] 88. Update existing tests for compatibility with all security hardening changes
+  - [x] 88.1 Update existing tests in `test_caller_unit.py` for new constructor parameters
     - Update all `RemoteExecutorCaller` constructor calls to include `allow_missing_output_attestation` and `max_output_size` where needed
     - Update tests that relied on `root_cert_pem=""` or `expected_pcrs=None` defaults to provide valid values
     - Update tests that expected `execute()` to succeed without attestation to expect mandatory attestation
     - _Requirements: 3.8, 4B.13, 5.13, 5.15_
 
-  - [ ] 88.2 Update existing tests in `test_caller_properties.py` for new constructor parameters
+  - [x] 88.2 Update existing tests in `test_caller_properties.py` for new constructor parameters
     - Update all property test `RemoteExecutorCaller` constructor calls for new mandatory/optional parameters
     - Update Property 12 test for trust-anchor-only model
     - _Requirements: 4B.9, 4B.13_
 
-- [ ] 89. Final checkpoint - Ensure all security hardening tests pass
+- [x] 89. Final checkpoint - Ensure all security hardening tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
