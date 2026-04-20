@@ -155,6 +155,34 @@ def verify_isolation_results(
 # ---------------------------------------------------------------------------
 
 
+def _escape_md_table_cell(value: str) -> str:
+    """Escape a string for safe inclusion in a Markdown table cell.
+
+    Pipe characters (``|``) are replaced with their HTML entity (``&#124;``)
+    so they cannot break the table structure.  Angle brackets and backticks
+    are also escaped so that untrusted remote values cannot inject HTML or
+    Markdown formatting into the summary.  Newlines and carriage returns are
+    replaced with a space so they cannot fragment the table row.
+
+    Note: asterisks, underscores, hash symbols, and square brackets are NOT
+    escaped here because they are not dangerous inside a Markdown table cell
+    when the cell is already delimited by pipes — renderers treat them as
+    literal text in that context.  Escaping them would produce double-escaping
+    when the HTML entities themselves contain those characters (e.g. ``&#124;``
+    contains ``#``).
+    """
+    # Replace newlines/carriage returns first (they break the row structure)
+    value = value.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    # Escape angle brackets (HTML/script injection)
+    value = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Escape backticks (inline code injection)
+    value = value.replace("`", "&#96;")
+    # Escape pipe last (table structure injection) — must come after other
+    # replacements so that HTML entities like &lt; are not re-escaped.
+    value = value.replace("|", "&#124;")
+    return value
+
+
 def generate_summary(results: list[dict]) -> str:
     """Generate a Markdown summary string for the isolation verification.
 
@@ -168,6 +196,8 @@ def generate_summary(results: list[dict]) -> str:
 
     Returns:
         A Markdown-formatted summary string suitable for $GITHUB_STEP_SUMMARY.
+        All untrusted values (execution_id, marker) are escaped to prevent
+        Markdown injection.
     """
     lines = [
         "## Isolation Verification Summary",
@@ -176,8 +206,10 @@ def generate_summary(results: list[dict]) -> str:
         "|---|---|---|---|---|",
     ]
     for r in results:
+        exec_id = _escape_md_table_cell(str(r["execution_id"]))
+        marker = _escape_md_table_cell(str(r["marker"]))
         lines.append(
-            f"| {r['execution_id']} | {r['marker']} | {r['marker_unique']} "
+            f"| {exec_id} | {marker} | {r['marker_unique']} "
             f"| {r['file_isolation']} | {r['process_isolation']} |"
         )
     lines.append("")

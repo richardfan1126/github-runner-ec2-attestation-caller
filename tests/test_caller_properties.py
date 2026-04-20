@@ -3449,3 +3449,151 @@ class TestServerURLAllowlistFiltering:
             "https://executor.example.com/extra",
             "https://executor.example.com",
         ) is False
+
+
+# ---------------------------------------------------------------------------
+# Property 42: Markdown escaping in job summary
+# ---------------------------------------------------------------------------
+
+# Feature: gha-remote-executor-caller, Property 42: Markdown escaping in job summary
+# **Validates: Requirements 7.9**
+class TestMarkdownEscapingInJobSummary:
+    """Property 42: _generate_summary() safely contains Markdown-sensitive characters
+    in stdout/stderr, and generate_summary() in verify_isolation.py escapes them
+    in table cells."""
+
+    # Characters that are Markdown-sensitive in various contexts
+    _MD_CHARS = list("*_#[]<>`|\\")
+
+    @given(
+        stdout_val=st.text(
+            min_size=0,
+            max_size=200,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
+        stderr_val=st.text(
+            min_size=0,
+            max_size=200,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
+        exit_code_val=st.integers(min_value=0, max_value=255),
+    )
+    @settings(max_examples=100)
+    def test_summary_fenced_code_blocks_contain_output(
+        self, stdout_val: str, stderr_val: str, exit_code_val: int
+    ):
+        """_generate_summary() wraps stdout/stderr in fenced code blocks.
+
+        The summary must contain the opening and closing ``` fences, and the
+        content between them must not allow the fence to be broken by any
+        triple-backtick sequence in the input.
+        """
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+        )
+        summary = caller._generate_summary(
+            stdout=stdout_val,
+            stderr=stderr_val,
+            exit_code=exit_code_val,
+            attestation_status="pass",
+            output_integrity_status="pass",
+        )
+
+        # The summary must contain fenced code block markers
+        assert "```" in summary
+
+        # Count the number of ``` occurrences — there must be at least 4
+        # (opening+closing for stdout, opening+closing for stderr).
+        import re
+        fences = re.findall(r"```", summary)
+        assert len(fences) >= 4, (
+            f"Expected at least 4 ``` fences in summary, got {len(fences)}"
+        )
+
+        # If the input contained triple backticks, the summary must not contain
+        # an unescaped run that would break the fence structure.  We verify this
+        # by checking that the number of ``` occurrences is exactly 4 (the two
+        # pairs of opening/closing fences) even when the input contains ```.
+        # Any ``` in the content must have been escaped (zero-width space inserted).
+        if "```" in stdout_val or "```" in stderr_val:
+            # After escaping, the content should not contain a raw ``` that
+            # would add extra fence markers.  The escaped form uses a zero-width
+            # space (U+200B) so the raw ``` count stays at exactly 4.
+            assert len(fences) == 4, (
+                "Triple backticks in input must be escaped so they do not "
+                "create extra fence markers in the summary"
+            )
+
+    @given(
+        marker_val=st.text(
+            min_size=1,
+            max_size=100,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
+        exec_id=st.text(
+            min_size=1,
+            max_size=50,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
+    )
+    @settings(max_examples=100)
+    def test_isolation_summary_escapes_table_cells(
+        self, marker_val: str, exec_id: str
+    ):
+        """generate_summary() in verify_isolation.py escapes Markdown-sensitive
+        characters in marker values and execution IDs so they cannot break the
+        table structure or inject Markdown formatting.
+        """
+        results = [
+            {
+                "execution_id": exec_id,
+                "marker": marker_val,
+                "marker_unique": "PASS",
+                "file_isolation": "PASS",
+                "process_isolation": "PASS",
+            }
+        ]
+        summary = generate_summary(results)
+
+        # The summary must still be a valid Markdown table (header row present)
+        assert "| Execution ID |" in summary
+
+        # Pipe characters from the input must not appear unescaped in table cells.
+        # We check by splitting on the table row separator and verifying that
+        # each data row has exactly the expected number of columns (5 pipes = 6 parts).
+        # Use split("\n") rather than splitlines() so that Unicode line-separator
+        # characters embedded in escaped cell values do not fragment rows.
+        # Note: newlines in cell values are replaced with spaces by the escaping
+        # function, so they will not appear in the output rows.
+        data_rows = [
+            line for line in summary.split("\n")
+            if line.startswith("|") and "Execution ID" not in line and "---" not in line
+        ]
+        for row in data_rows:
+            # Each row must have exactly 6 pipe-delimited parts (5 separators)
+            parts = row.split("|")
+            assert len(parts) == 7, (  # leading + 5 cells + trailing = 7 parts
+                f"Table row has wrong number of columns after escaping: {row!r}"
+            )
+
+        # Pipe characters from the input must be escaped (not raw |)
+        if "|" in marker_val:
+            # The raw pipe must not appear in any individual cell content.
+            # Each cell is parts[1], parts[2], ... parts[5] (strip whitespace).
+            for row in data_rows:
+                cells = row.split("|")[1:-1]  # exclude leading/trailing empty strings
+                for cell in cells:
+                    assert "|" not in cell, (
+                        f"Raw pipe from marker value leaked into table cell {cell!r} in row {row!r}"
+                    )
+
+        if "|" in exec_id:
+            for row in data_rows:
+                cells = row.split("|")[1:-1]
+                for cell in cells:
+                    assert "|" not in cell, (
+                        f"Raw pipe from execution_id leaked into table cell {cell!r} in row {row!r}"
+                    )

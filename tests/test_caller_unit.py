@@ -3964,3 +3964,169 @@ class TestWorkflowInputValidation:
         assert "not in the configured server_url_allowlist" in content, (
             "Workflow must emit a clear error message when server_url is not in allowlist"
         )
+
+
+# ---------------------------------------------------------------------------
+# Markdown escaping imports
+# ---------------------------------------------------------------------------
+
+from verify_isolation import generate_summary as _vi_generate_summary
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: Markdown escaping in job summaries (Requirement 7.9)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkdownEscapingInJobSummary:
+    """Unit tests for Markdown escaping in _generate_summary() and
+    verify_isolation.generate_summary().
+    Validates: Requirement 7.9"""
+
+    # ------------------------------------------------------------------
+    # _generate_summary() — fenced code block escaping
+    # ------------------------------------------------------------------
+
+    def test_stdout_with_triple_backticks_is_escaped_in_summary(self):
+        """stdout containing triple backticks must not break the fenced code block.
+        Validates: Requirement 7.9"""
+        caller = _make_caller()
+        dangerous_stdout = "before\n```\nafter"
+        summary = caller._generate_summary(
+            stdout=dangerous_stdout,
+            stderr="",
+            exit_code=0,
+            attestation_status="pass",
+            output_integrity_status="pass",
+        )
+        # The summary must still have exactly 4 fence markers (2 pairs)
+        import re
+        fences = re.findall(r"```", summary)
+        assert len(fences) == 4, (
+            f"Triple backticks in stdout must be escaped; got {len(fences)} fence markers"
+        )
+
+    def test_stderr_with_triple_backticks_is_escaped_in_summary(self):
+        """stderr containing triple backticks must not break the fenced code block.
+        Validates: Requirement 7.9"""
+        caller = _make_caller()
+        dangerous_stderr = "error: ```unexpected``` token"
+        summary = caller._generate_summary(
+            stdout="",
+            stderr=dangerous_stderr,
+            exit_code=1,
+            attestation_status="pass",
+            output_integrity_status="pass",
+        )
+        import re
+        fences = re.findall(r"```", summary)
+        assert len(fences) == 4, (
+            f"Triple backticks in stderr must be escaped; got {len(fences)} fence markers"
+        )
+
+    def test_stdout_with_pipe_characters_is_contained_in_code_block(self):
+        """stdout containing pipe characters is safely contained in a fenced code block.
+        Validates: Requirement 7.9"""
+        caller = _make_caller()
+        stdout_with_pipes = "col1 | col2 | col3\n---|---|---"
+        summary = caller._generate_summary(
+            stdout=stdout_with_pipes,
+            stderr="",
+            exit_code=0,
+            attestation_status="pass",
+            output_integrity_status="pass",
+        )
+        # The raw pipe content must appear in the summary (inside the code block)
+        assert "col1 | col2 | col3" in summary
+
+    def test_stdout_with_longer_backtick_run_is_escaped(self):
+        """stdout containing 4+ consecutive backticks is also escaped.
+        Validates: Requirement 7.9"""
+        caller = _make_caller()
+        # 4 backticks would also break a ``` fence if not escaped
+        dangerous_stdout = "````four backticks````"
+        summary = caller._generate_summary(
+            stdout=dangerous_stdout,
+            stderr="",
+            exit_code=0,
+            attestation_status="pass",
+            output_integrity_status="pass",
+        )
+        import re
+        fences = re.findall(r"```", summary)
+        assert len(fences) == 4, (
+            f"4+ backtick runs in stdout must be escaped; got {len(fences)} fence markers"
+        )
+
+    # ------------------------------------------------------------------
+    # generate_summary() in verify_isolation.py — table cell escaping
+    # ------------------------------------------------------------------
+
+    def test_marker_with_pipe_is_escaped_in_isolation_summary_table(self):
+        """Pipe characters in marker values must be escaped in the Markdown table.
+        Validates: Requirement 7.9"""
+        results = [
+            {
+                "execution_id": "exec-1",
+                "marker": "marker|with|pipes",
+                "marker_unique": "PASS",
+                "file_isolation": "PASS",
+                "process_isolation": "PASS",
+            }
+        ]
+        summary = _vi_generate_summary(results)
+
+        # Each data row must have exactly 6 pipe-delimited parts (5 separators)
+        data_rows = [
+            line for line in summary.splitlines()
+            if line.startswith("|") and "Execution ID" not in line and "---" not in line
+        ]
+        assert len(data_rows) == 1
+        parts = data_rows[0].split("|")
+        assert len(parts) == 7, (
+            f"Table row must have 5 columns; raw pipe leaked: {data_rows[0]!r}"
+        )
+
+    def test_marker_with_script_tag_is_escaped_in_isolation_summary_table(self):
+        """Angle brackets in marker values must be escaped in the Markdown table.
+        Validates: Requirement 7.9"""
+        results = [
+            {
+                "execution_id": "exec-1",
+                "marker": "<script>alert(1)</script>",
+                "marker_unique": "PASS",
+                "file_isolation": "PASS",
+                "process_isolation": "PASS",
+            }
+        ]
+        summary = _vi_generate_summary(results)
+
+        # Raw angle brackets must not appear in the summary
+        assert "<script>" not in summary
+        assert "</script>" not in summary
+        # Escaped form must be present
+        assert "&lt;script&gt;" in summary
+
+    def test_execution_id_with_pipe_is_escaped_in_isolation_summary_table(self):
+        """Pipe characters in execution IDs must be escaped in the Markdown table.
+        Validates: Requirement 7.9"""
+        results = [
+            {
+                "execution_id": "exec|1|injected",
+                "marker": "safe-marker",
+                "marker_unique": "PASS",
+                "file_isolation": "PASS",
+                "process_isolation": "PASS",
+            }
+        ]
+        summary = _vi_generate_summary(results)
+
+        data_rows = [
+            line for line in summary.splitlines()
+            if line.startswith("|") and "Execution ID" not in line and "---" not in line
+        ]
+        assert len(data_rows) == 1
+        parts = data_rows[0].split("|")
+        assert len(parts) == 7, (
+            f"Table row must have 5 columns; raw pipe from exec_id leaked: {data_rows[0]!r}"
+        )

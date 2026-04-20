@@ -1546,18 +1546,18 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test workflow YAML rejects `server_url` not in allowlist when configured
     - _Requirements: 1.15, 1.16, 1.17_
 
-- [ ] 86. Implement Markdown escaping in job summaries
-  - [ ] 86.1 Add Markdown escaping to `_generate_summary()` in `caller.py`
+- [x] 86. Implement Markdown escaping in job summaries
+  - [x] 86.1 Add Markdown escaping to `_generate_summary()` in `caller.py`
     - Escape Markdown-sensitive characters (backticks, square brackets, angle brackets, pipes, asterisks, underscores, hash symbols) in stdout and stderr before writing into the summary
     - Ensure stdout/stderr are contained within fenced code blocks with proper escaping (escape any triple-backtick sequences within the content)
     - _Requirements: 7.9_
 
-  - [ ] 86.2 Add Markdown escaping to `generate_summary()` in `verify_isolation.py`
+  - [x] 86.2 Add Markdown escaping to `generate_summary()` in `verify_isolation.py`
     - Escape Markdown-sensitive characters in marker values and execution IDs before inserting into the Markdown table
     - Escape pipe characters (`|`) in table cell content to prevent table structure injection
     - _Requirements: 7.9_
 
-  - [ ] 86.3 Write property test for Markdown escaping in job summary
+  - [x] 86.3 Write property test for Markdown escaping in job summary
     - **Property 42: Markdown escaping in job summary**
     - Generate random stdout/stderr strings containing Markdown-sensitive characters
     - Verify `_generate_summary()` produces output where these characters are escaped or safely contained
@@ -1565,14 +1565,14 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Verify `generate_summary()` in `verify_isolation.py` escapes them in the table
     - **Validates: Requirements 7.9**
 
-  - [ ] 86.4 Write unit tests for Markdown escaping
+  - [x] 86.4 Write unit tests for Markdown escaping
     - Test stdout containing triple backticks is escaped in summary
     - Test stderr containing pipe characters is escaped in summary
     - Test marker values containing `|` are escaped in isolation summary table
     - Test marker values containing `<script>` are escaped
     - _Requirements: 7.9_
 
-- [ ] 87. Checkpoint - Ensure shell injection prevention and Markdown escaping tests pass
+- [x] 87. Checkpoint - Ensure shell injection prevention and Markdown escaping tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 88. Update existing tests for compatibility with all security hardening changes

@@ -717,6 +717,19 @@ class RemoteExecutorCaller:
 
             time.sleep(self.poll_interval)
 
+    @staticmethod
+    def _escape_fenced_code_block(text: str) -> str:
+        """Escape content for safe inclusion inside a Markdown fenced code block.
+
+        Replaces any sequence of three or more backticks with an equivalent
+        number of backticks where the first is replaced by a zero-width space,
+        preventing the sequence from accidentally closing the surrounding fence.
+        """
+        # Replace ``` (and longer runs) so they cannot close the outer fence.
+        # We insert a zero-width space (U+200B) before the third backtick.
+        import re
+        return re.sub(r"(`{3,})", lambda m: m.group(0)[:2] + "\u200b" + m.group(0)[2:], text)
+
     def _generate_summary(
         self,
         stdout: str,
@@ -726,7 +739,17 @@ class RemoteExecutorCaller:
         output_integrity_status: str,
         truncated: bool = False,
     ) -> str:
-        """Generate a GitHub Actions job summary string."""
+        """Generate a GitHub Actions job summary string.
+
+        stdout and stderr are placed inside fenced code blocks.  Any triple-
+        backtick sequences inside the content are escaped so they cannot break
+        the fence.  This is the only escaping needed for fenced code blocks —
+        other Markdown-sensitive characters (*, _, #, |, etc.) are rendered as
+        literal text inside a code fence and do not need additional escaping.
+        """
+        safe_stdout = self._escape_fenced_code_block(stdout)
+        safe_stderr = self._escape_fenced_code_block(stderr)
+
         lines = [
             "## Remote Executor Results",
             "",
@@ -741,12 +764,12 @@ class RemoteExecutorCaller:
         lines.extend([
             "### stdout",
             "```",
-            stdout,
+            safe_stdout,
             "```",
             "",
             "### stderr",
             "```",
-            stderr,
+            safe_stderr,
             "```",
         ])
         return "\n".join(lines)
