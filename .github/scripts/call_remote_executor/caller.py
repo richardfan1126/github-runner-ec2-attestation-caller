@@ -32,6 +32,7 @@ class RemoteExecutorCaller:
         max_retries: int = 3,
         audience: str = "",
         attestation_output_dir: str | None = None,
+        allow_missing_output_attestation: bool = False,
     ):
         if not root_cert_pem:
             raise CallerError(
@@ -54,6 +55,7 @@ class RemoteExecutorCaller:
         self.expected_pcrs = expected_pcrs
         self.audience = audience
         self._oidc_token: str | None = None
+        self.allow_missing_output_attestation = allow_missing_output_attestation
         self._artifact_collector: AttestationArtifactCollector | None = (
             AttestationArtifactCollector(attestation_output_dir)
             if attestation_output_dir is not None
@@ -646,6 +648,24 @@ class RemoteExecutorCaller:
                         phase="polling",
                         details={"exit_code": exit_code, "exit_code_type": type(exit_code).__name__},
                     )
+                # Fail-closed: on the final poll, a missing output attestation is an error
+                # unless allow_missing_output_attestation is set (Req 5.13, 5.14)
+                if not output_attestation_b64:
+                    if not self.allow_missing_output_attestation:
+                        raise CallerError(
+                            message=(
+                                "Output attestation is missing on the final poll response: "
+                                "the server did not provide an output_attestation_document. "
+                                "Use --allow-missing-output-attestation to permit degraded operation."
+                            ),
+                            phase="polling",
+                            details={"execution_id": execution_id},
+                        )
+                    else:
+                        logger.warning(
+                            "Output attestation is missing on the final poll response "
+                            "(allow_missing_output_attestation=True, continuing in degraded mode)"
+                        )
                 if any_attestation_received and all_validations_passed:
                     output_integrity_status = "pass"
                 elif not any_attestation_received:

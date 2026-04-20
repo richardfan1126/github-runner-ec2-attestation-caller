@@ -1406,42 +1406,42 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - Test `complete=true` with `exit_code="0"` (string) raises `CallerError`
     - _Requirements: 5.12_
 
-- [ ] 80. Implement fail-closed output attestation on final poll
-  - [ ] 80.1 Update `RemoteExecutorCaller.__init__` to accept `allow_missing_output_attestation` parameter
+- [x] 80. Implement fail-closed output attestation on final poll
+  - [x] 80.1 Update `RemoteExecutorCaller.__init__` to accept `allow_missing_output_attestation` parameter
     - Add `allow_missing_output_attestation: bool = False` parameter
     - Store as instance attribute
     - _Requirements: 5.13, 5.14_
 
-  - [ ] 80.2 Update `poll_output()` in `caller.py` for fail-closed output attestation
+  - [x] 80.2 Update `poll_output()` in `caller.py` for fail-closed output attestation
     - When `complete=true` and the final poll response does not contain a valid `output_attestation_document` (null or missing):
       - If `allow_missing_output_attestation` is `False` (default), raise `CallerError(phase="polling")` indicating output attestation is missing
       - If `allow_missing_output_attestation` is `True`, log a warning and continue returning the result
     - When the final poll response does contain a valid output attestation, validate it normally regardless of the flag
     - _Requirements: 5.13, 5.14_
 
-  - [ ] 80.3 Update `cli.py` to add `--allow-missing-output-attestation` CLI flag
+  - [x] 80.3 Update `cli.py` to add `--allow-missing-output-attestation` CLI flag
     - Add `--allow-missing-output-attestation` as a boolean flag (store_true) to argparse
     - Pass the value to `RemoteExecutorCaller.__init__`
     - _Requirements: 5.14_
 
-  - [ ] 80.4 Update workflow YAML caller invocations if needed
+  - [x] 80.4 Update workflow YAML caller invocations if needed
     - Verify existing workflow invocations do NOT pass `--allow-missing-output-attestation` (fail-closed by default)
     - _Requirements: 5.13_
 
-  - [ ] 80.5 Write property test for fail-closed output attestation on final poll
+  - [x] 80.5 Write property test for fail-closed output attestation on final poll
     - **Property 37: Fail-closed output attestation on final poll**
     - Test `complete=true` with no `output_attestation_document` and `allow_missing_output_attestation=False` raises `CallerError`
     - Test `complete=true` with no `output_attestation_document` and `allow_missing_output_attestation=True` logs warning and returns result
     - Test `complete=true` with valid `output_attestation_document` validates normally regardless of flag
     - **Validates: Requirements 5.13, 5.14**
 
-  - [ ] 80.6 Write unit tests for fail-closed output attestation
+  - [x] 80.6 Write unit tests for fail-closed output attestation
     - Test final poll with null attestation and `allow_missing_output_attestation=False` raises `CallerError`
     - Test final poll with null attestation and `allow_missing_output_attestation=True` succeeds with warning
     - Test `--allow-missing-output-attestation` CLI flag is parsed correctly
     - _Requirements: 5.13, 5.14_
 
-- [ ] 81. Checkpoint - Ensure execution attestation, exit code, and fail-closed tests pass
+- [x] 81. Checkpoint - Ensure execution attestation, exit code, and fail-closed tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [ ] 82. Implement output size limits

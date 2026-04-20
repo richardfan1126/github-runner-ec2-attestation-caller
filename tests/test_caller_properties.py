@@ -85,12 +85,20 @@ _TEST_CA_PEM, _TEST_CA_DER, _TEST_SIGN_KEY, _TEST_SIGN_CERT_DER = _generate_test
 # ---------------------------------------------------------------------------
 
 def _make_caller() -> RemoteExecutorCaller:
-    """Create a caller instance for testing."""
+    """Create a caller instance for testing.
+
+    Sets allow_missing_output_attestation=True so that tests focused on other
+    behaviour (retry, OIDC, encryption, etc.) are not broken by the fail-closed
+    output attestation check when they use null output_attestation_document.
+    Tests that specifically exercise the fail-closed behaviour construct their
+    own callers with the desired setting.
+    """
     return RemoteExecutorCaller(
         server_url="http://localhost:8080",
         audience="test-audience",
         root_cert_pem="DUMMY-ROOT-CERT-PEM",
         expected_pcrs={0: "aa" * 48},
+        allow_missing_output_attestation=True,
     )
 
 
@@ -1079,6 +1087,7 @@ class TestPollingRetryOnTransientErrors:
             audience="test-audience",
             root_cert_pem="DUMMY-ROOT-CERT-PEM",
             expected_pcrs={0: "aa" * 48},
+            allow_missing_output_attestation=True,
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -1147,6 +1156,7 @@ class TestPollingRetryOnTransientErrors:
             audience="test-audience",
             root_cert_pem="DUMMY-ROOT-CERT-PEM",
             expected_pcrs={0: "aa" * 48},
+            allow_missing_output_attestation=True,
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -1390,6 +1400,7 @@ class TestOIDCTokenTransmission:
             audience="test-audience",
             root_cert_pem="DUMMY-ROOT-CERT-PEM",
             expected_pcrs={0: "aa" * 48},
+            allow_missing_output_attestation=True,
         )
         caller._oidc_token = oidc_token
         server_enc = _setup_encryption(caller)
@@ -2850,6 +2861,7 @@ class TestExitCodeValidationOnCompletion:
             audience="test-audience",
             root_cert_pem="DUMMY-ROOT-CERT-PEM",
             expected_pcrs={0: "aa" * 48},
+            allow_missing_output_attestation=True,
         )
         caller._oidc_token = "test-token"
         server_enc = _setup_encryption(caller)
@@ -2898,3 +2910,131 @@ class TestExitCodeValidationOnCompletion:
 
         assert exc_info.value.phase == "polling"
         assert "protocol error" in exc_info.value.message.lower() or "exit_code" in exc_info.value.message.lower()
+
+
+# ---------------------------------------------------------------------------
+# Property 37: Fail-closed output attestation on final poll (Task 80.5)
+# ---------------------------------------------------------------------------
+
+
+class TestFailClosedOutputAttestationOnFinalPoll:
+    """Property 37: Fail-closed output attestation on final poll.
+
+    Validates: Requirements 5.13, 5.14
+    """
+
+    def _make_caller(self, allow_missing: bool = False) -> RemoteExecutorCaller:
+        """Create a caller with the given allow_missing_output_attestation setting."""
+        caller = RemoteExecutorCaller(
+            server_url="http://localhost:8080",
+            poll_interval=0,
+            max_poll_duration=9999,
+            audience="test-audience",
+            root_cert_pem="DUMMY-ROOT-CERT-PEM",
+            expected_pcrs={0: "aa" * 48},
+            allow_missing_output_attestation=allow_missing,
+        )
+        caller._oidc_token = "test-token"
+        _setup_encryption(caller)
+        return caller
+
+    def _make_complete_response_no_attestation(self, caller, stdout: str, stderr: str, exit_code: int):
+        """Build a mock HTTP response with complete=true and no output_attestation_document."""
+        server_enc = caller._encryption
+        return _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout,
+            "stderr": stderr,
+            "complete": True,
+            "exit_code": exit_code,
+            "output_attestation_document": None,
+        })
+
+    def _make_complete_response_with_attestation(self, caller, stdout: str, stderr: str, exit_code: int):
+        """Build a mock HTTP response with complete=true and a valid output_attestation_document."""
+        server_enc = caller._encryption
+        # Build a valid COSE Sign1 attestation with the correct output digest
+        canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
+        import hashlib
+        output_digest = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+        payload = _make_test_payload(extra_fields={"user_data": output_digest.encode("utf-8")})
+        attestation_b64 = _wrap_cose_sign1(payload)
+        return _make_encrypted_mock_response(server_enc, {
+            "stdout": stdout,
+            "stderr": stderr,
+            "complete": True,
+            "exit_code": exit_code,
+            "output_attestation_document": attestation_b64,
+        })
+
+    @given(
+        stdout=st.text(max_size=50),
+        stderr=st.text(max_size=50),
+        exit_code=st.integers(min_value=0, max_value=255),
+    )
+    @settings(max_examples=30)
+    def test_fail_closed_raises_caller_error_when_no_attestation(
+        self, stdout: str, stderr: str, exit_code: int
+    ):
+        """complete=true with no output_attestation_document and allow_missing=False raises CallerError.
+        Validates: Requirement 5.13"""
+        caller = self._make_caller(allow_missing=False)
+        mock_resp = self._make_complete_response_no_attestation(caller, stdout, stderr, exit_code)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.poll_output("test-exec-id")
+
+        assert exc_info.value.phase == "polling"
+        assert "output attestation" in exc_info.value.message.lower()
+
+    @given(
+        stdout=st.text(max_size=50),
+        stderr=st.text(max_size=50),
+        exit_code=st.integers(min_value=0, max_value=255),
+    )
+    @settings(max_examples=30)
+    def test_allow_missing_logs_warning_and_returns_result(
+        self, stdout: str, stderr: str, exit_code: int
+    ):
+        """complete=true with no output_attestation_document and allow_missing=True logs warning and returns.
+        Validates: Requirement 5.14"""
+        caller = self._make_caller(allow_missing=True)
+        mock_resp = self._make_complete_response_no_attestation(caller, stdout, stderr, exit_code)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch("call_remote_executor.caller.logger") as mock_logger:
+                result = caller.poll_output("test-exec-id")
+
+        # Should have logged a warning about missing attestation
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("output attestation" in c.lower() or "missing" in c.lower() for c in warning_calls), (
+            f"Expected warning about missing output attestation, got: {warning_calls}"
+        )
+        # Should still return the result
+        assert result["stdout"] == stdout
+        assert result["stderr"] == stderr
+        assert result["exit_code"] == exit_code
+
+    @given(
+        stdout=st.text(max_size=50),
+        stderr=st.text(max_size=50),
+        exit_code=st.integers(min_value=0, max_value=255),
+        allow_missing=st.booleans(),
+    )
+    @settings(max_examples=30)
+    def test_valid_attestation_validates_normally_regardless_of_flag(
+        self, stdout: str, stderr: str, exit_code: int, allow_missing: bool
+    ):
+        """complete=true with valid output_attestation_document validates normally regardless of flag.
+        Validates: Requirements 5.13, 5.14"""
+        caller = self._make_caller(allow_missing=allow_missing)
+        mock_resp = self._make_complete_response_with_attestation(caller, stdout, stderr, exit_code)
+
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with patch.object(caller, "validate_output_attestation", return_value=True) as mock_validate:
+                result = caller.poll_output("test-exec-id")
+
+        # validate_output_attestation should have been called exactly once
+        assert mock_validate.call_count == 1
+        # Result should be returned successfully
+        assert result["exit_code"] == exit_code

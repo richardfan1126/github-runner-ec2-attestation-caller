@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--expected-pcrs", required=True, help="JSON string mapping PCR index to expected hex value")
     parser.add_argument("--audience", default="", help="Audience value for OIDC token request")
     parser.add_argument("--attestation-output-dir", default="attestation-documents", help="Directory for saving attestation artifact files")
+    parser.add_argument("--allow-missing-output-attestation", action="store_true", default=False, help="Allow run to continue when output attestation is absent (degraded mode)")
 
     args = parser.parse_args()
 
@@ -48,6 +49,7 @@ def main():
         expected_pcrs=expected_pcrs,
         audience=args.audience,
         attestation_output_dir=args.attestation_output_dir,
+        allow_missing_output_attestation=args.allow_missing_output_attestation,
     )
 
     try:
