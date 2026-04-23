@@ -12,7 +12,7 @@ The caller validates the server's NitroTPM attestation documents at three points
 
 The workflow validates the `concurrency_count` input as a strict positive integer (regex `^[1-9][0-9]*$`) before any shell use and passes it via an environment variable rather than direct shell interpolation, preventing shell injection. An optional `server_url_allowlist` input restricts which server URLs the workflow may target. Size limits are enforced on attestation documents, encrypted responses, composite server public keys, and stdout/stderr output before decoding or processing. Untrusted remote output is Markdown-escaped before being written to the GitHub Actions job summary.
 
-The caller handles server-side rate limiting (HTTP 429 Too Many Requests) on `/health`, `/attest`, and `/execute` endpoints by retrying with exponential backoff up to a configurable number of retries. It also handles specific error responses from `/execute`: HTTP 413 (script too large), HTTP 503 (server at capacity), and HTTP 400 (duplicate nonce / anti-replay).
+The caller handles server-side rate limiting (HTTP 429 Too Many Requests) on `/health`, `/attest`, and `/execute` endpoints by retrying with exponential backoff up to a configurable number of retries. It also handles specific error responses from `/execute`: HTTP 413 (script too large), HTTP 503 (server at capacity), HTTP 400 (duplicate nonce / anti-replay), and HTTP 400 (invalid script path — absolute path or null byte rejected by server-side `validate_script_path`).
 
 The workflow also supports concurrent execution isolation testing. When configured with a `concurrency_count` greater than 1, the workflow dispatches multiple independent caller script invocations in parallel — each with its own PQ_Hybrid_KEM session, OIDC token, and attestation validation. Each execution's build script generates its own unique marker at runtime (via `/proc/sys/kernel/random/uuid`), so no marker is passed from the workflow or included in the encrypted payload. After all executions complete, the workflow extracts the `MARKER:<value>` from each execution's stdout and verifies that all markers are unique and that each execution passes filesystem and process isolation tests, demonstrating that the Remote Executor server properly isolates concurrent executions.
 
@@ -468,6 +468,7 @@ class RemoteExecutorCaller:
         - HTTP 413: Script file exceeds server's MAX_SCRIPT_SIZE_BYTES
         - HTTP 503: Server at maximum concurrent execution capacity
         - HTTP 400 (duplicate nonce): Anti-replay rejection
+        - HTTP 400 (invalid script path): script_path is absolute or contains null bytes
         - HTTP 429: Rate limited — retries with exponential backoff up to max retries
         Validates the attestation and verifies the nonce matches.
         
@@ -1013,6 +1014,7 @@ Plaintext payload (before encryption):
 | HTTP Status | Meaning | Caller Behavior |
 |-------------|---------|-----------------|
 | 400 | Bad Request (duplicate nonce / anti-replay) | Fail with duplicate nonce error |
+| 400 | Bad Request (invalid script path — absolute or null byte) | Fail with invalid script path error |
 | 401 | Unauthorized (invalid/missing OIDC token) | Fail with authentication failure |
 | 403 | Forbidden (repo not authorized or OIDC repo claim mismatch) | Fail with authorization error |
 | 413 | Payload Too Large (script exceeds MAX_SCRIPT_SIZE_BYTES) | Fail with script size limit error |
@@ -1221,9 +1223,9 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 
 ### Property 5: Execute HTTP error propagation
 
-*For any* HTTP error status code (4xx or 5xx), when the `/execute` endpoint returns that status, the `execute` method should raise a `CallerError` containing the status code and error details. Specifically: HTTP 413 should indicate script size exceeds server maximum, HTTP 503 should indicate server at maximum concurrent execution capacity, HTTP 400 with duplicate nonce should indicate anti-replay rejection, and HTTP 429 should trigger retry with exponential backoff before failing with a rate limit error.
+*For any* HTTP error status code (4xx or 5xx), when the `/execute` endpoint returns that status, the `execute` method should raise a `CallerError` containing the status code and error details. Specifically: HTTP 413 should indicate script size exceeds server maximum, HTTP 503 should indicate server at maximum concurrent execution capacity, HTTP 400 with duplicate nonce should indicate anti-replay rejection, HTTP 400 with invalid script path should indicate the script path is absolute or contains null bytes, and HTTP 429 should trigger retry with exponential backoff before failing with a rate limit error.
 
-**Validates: Requirements 3.10, 3.16, 3.17, 3.18, 3.19**
+**Validates: Requirements 3.10, 3.16, 3.17, 3.18, 3.19, 3.20**
 
 ### Property 6: Polling termination on completion with per-poll output attestation
 
@@ -1488,6 +1490,7 @@ The caller must replicate this exact format for SHA-256 digest comparison.
 | Execute | HTTP 429 Too Many Requests | Retry with exponential backoff up to max retries, then raise `CallerError(phase="execute")` with rate limit error |
 | Execute | HTTP 503 Service Unavailable | Raise `CallerError(phase="execute")` with server at maximum concurrent execution capacity message |
 | Execute | HTTP 400 Bad Request (duplicate nonce) | Raise `CallerError(phase="execute")` with duplicate nonce / anti-replay rejection message |
+| Execute | HTTP 400 Bad Request (invalid script path) | Raise `CallerError(phase="execute")` with invalid script path message indicating the path is absolute or contains null bytes |
 | Execute | HTTP 4xx/5xx (other) | Raise `CallerError(phase="execute")` with status code and response body |
 | Execute | Nonce mismatch in attestation from /execute response | Raise `CallerError(phase="attestation")` indicating nonce verification failure |
 | Attestation | Invalid base64 | Raise `CallerError(phase="attestation")` with decoding details |
@@ -1586,7 +1589,7 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 4. **Health check acceptance**: Generate random HTTP status codes and random `status` field values. Verify `health_check` succeeds iff status code is 200 and response body is `{"status": "healthy"}`.
    `# Feature: gha-remote-executor-caller, Property 4: Health check acceptance`
 
-5. **Execute HTTP error propagation**: Generate random 4xx/5xx status codes and response bodies. Verify `execute` raises `CallerError` with the status code. Specifically verify HTTP 413 produces script size error, HTTP 503 produces capacity error, HTTP 400 with duplicate nonce produces anti-replay error, and HTTP 429 triggers retry before failing.
+5. **Execute HTTP error propagation**: Generate random 4xx/5xx status codes and response bodies. Verify `execute` raises `CallerError` with the status code. Specifically verify HTTP 413 produces script size error, HTTP 503 produces capacity error, HTTP 400 with duplicate nonce produces anti-replay error, HTTP 400 with invalid script path produces invalid script path error, and HTTP 429 triggers retry before failing.
    `# Feature: gha-remote-executor-caller, Property 5: Execute HTTP error propagation`
 
 6. **Polling termination on completion with per-poll output attestation**: Generate random N (0-20), create a mock that returns encrypted `complete: false` N times then encrypted `complete: true`. Each mock response includes an `output_attestation_document` with a valid COSE Sign1 structure containing the SHA-256 digest of the current output. Verify exactly N+1 POST requests made, output attestation validated on each poll response, and final decrypted response fields extracted.
@@ -1786,6 +1789,7 @@ The caller uses both unit tests and property-based tests for comprehensive cover
 - Execute with HTTP 413 raises `CallerError` with script size exceeds server maximum message (Req 3.14)
 - Execute with HTTP 503 raises `CallerError` with server at maximum concurrent execution capacity message (Req 3.15)
 - Execute with HTTP 400 (duplicate nonce) raises `CallerError` with anti-replay rejection message (Req 3.16)
+- Execute with HTTP 400 (invalid script path) raises `CallerError` with invalid script path message (Req 3.20)
 - Execute with HTTP 429 retries with exponential backoff then raises `CallerError` with rate limit error (Req 3.17)
 - Health check with HTTP 429 retries with exponential backoff then raises `CallerError` with rate limit error (Req 8.6)
 - Attest with HTTP 429 retries with exponential backoff then raises `CallerError` with rate limit error (Req 11.13)

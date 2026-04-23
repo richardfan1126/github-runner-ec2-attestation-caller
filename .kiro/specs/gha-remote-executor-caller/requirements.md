@@ -134,6 +134,7 @@ The caller script is organized as a Python package (not a single file) under `.g
 17. IF the Remote_Executor_Server returns HTTP 503 Service Unavailable, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the server is at maximum concurrent execution capacity
 18. IF the Remote_Executor_Server returns HTTP 400 Bad Request with a duplicate nonce error, THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the nonce was rejected as a duplicate (anti-replay)
 19. IF the Remote_Executor_Server returns HTTP 429 Too Many Requests, THEN THE Caller_Script SHALL retry the request with exponential backoff up to a configurable number of retries before failing with a rate limit error
+20. IF the Remote_Executor_Server returns HTTP 400 Bad Request with an invalid script path error (script path is absolute or contains null bytes), THEN THE Caller_Script SHALL fail the workflow step with an error message indicating the script path is invalid
 
 ### Requirement 4: Server Identity Attestation Validation
 

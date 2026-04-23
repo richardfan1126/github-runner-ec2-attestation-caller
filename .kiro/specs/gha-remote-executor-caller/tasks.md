@@ -1215,6 +1215,11 @@ Implement the client-side caller for the Remote Executor system: a Python script
     - When `/execute` returns HTTP 400 with a duplicate nonce error, raise `CallerError(phase="execute")` with a message indicating the nonce was rejected as a duplicate (anti-replay)
     - _Requirements: 3.16_
 
+  - [x] 67.4 Add HTTP 400 invalid script path handling in `execute` in `caller.py`
+    - When `/execute` returns HTTP 400 with a response body indicating an invalid script path (absolute path or null byte), raise `CallerError(phase="execute")` with a message indicating the script path is invalid
+    - Distinguish from the duplicate nonce HTTP 400 by inspecting the response body for path-related error keywords (e.g., "script_path", "invalid", "absolute", "path")
+    - _Requirements: 3.20_
+
 - [x] 68. Implement output truncation handling
   - [x] 68.1 Update `poll_output` in `caller.py` to detect and log truncation
     - After decrypting each poll response, check for a `truncated` field set to `true`
@@ -1281,6 +1286,10 @@ Implement the client-side caller for the Remote Executor system: a Python script
   - [x] 73.6 Write unit tests for HTTP 400 duplicate nonce on `/execute`
     - Test execute raises `CallerError` with duplicate nonce / anti-replay error message on HTTP 400 (Req 3.16)
     - _Requirements: 3.16_
+
+  - [x] 73.6b Write unit tests for HTTP 400 invalid script path on `/execute`
+    - Test execute raises `CallerError` with invalid script path error message on HTTP 400 with invalid script path response body (Req 3.20)
+    - _Requirements: 3.20_
 
   - [x] 73.7 Write unit tests for output truncation handling
     - Test poll_output logs warning when decrypted response contains `truncated: true` (Req 5.16)
@@ -1607,5 +1616,5 @@ Implement the client-side caller for the Remote Executor system: a Python script
 - Tasks 48-53 cover module split refactoring for call_remote_executor (Requirements 1.9-1.14; Property 28). The `verify_isolation.py` script remains as a single file.
 - Tasks 54-58 cover per-poll output attestation validation (Requirements 5.6, 5.7, 5.14, 5.15, 6A.1, 6B.8-6B.12, 6C.13; Properties 3, 6, 29). The `poll_output` method now validates output attestation on every poll response, and `run()` no longer calls `validate_output_attestation` separately.
 - Tasks 59-65 cover attestation document artifact persistence (Requirements 18A-18E; Properties 30-33). The `AttestationArtifactCollector` class saves attestation documents and their attested payloads to disk, generates a JSON manifest, and the workflow uploads them as GitHub Actions artifacts.
-- Tasks 66-74 cover server-side security hardening changes: rate limiting retry with exponential backoff on `/health`, `/attest`, `/execute` (Requirements 3.17, 8.6, 11.13; Property 34), new HTTP error codes on `/execute` — 413 Payload Too Large, 503 Service Unavailable, 400 duplicate nonce (Requirements 3.14, 3.15, 3.16), output truncation handling in poll responses and job summary (Requirements 5.16, 5.17, 7.8), updated HTTP 403 error messages (Requirement 10.7), and simplified health check response validation (Requirement 8.2).
+- Tasks 66-74 cover server-side security hardening changes: rate limiting retry with exponential backoff on `/health`, `/attest`, `/execute` (Requirements 3.17, 8.6, 11.13; Property 34), new HTTP error codes on `/execute` — 413 Payload Too Large, 503 Service Unavailable, 400 duplicate nonce, 400 invalid script path (Requirements 3.14, 3.15, 3.16, 3.20), output truncation handling in poll responses and job summary (Requirements 5.16, 5.17, 7.8), updated HTTP 403 error messages (Requirement 10.7), and simplified health check response validation (Requirement 8.2).
 - Tasks 75-89 cover security review hardening (SECURITY_REVIEW.md findings): trust-anchor-only PKI model in certificate chain validation (Requirements 4B.9, 4B.13; Property 12), mandatory attestation parameters on `RemoteExecutorCaller` (Requirement 4B.13; Property 43), mandatory execution-acceptance attestation with request binding (Requirements 3.8, 3.9; Property 35), exit code validation on completion (Requirement 5.12; Property 36), fail-closed output attestation on final poll with `--allow-missing-output-attestation` opt-out (Requirements 5.13, 5.14; Property 37), output size limits with `--max-output-size` (Requirement 5.15; Property 39), size limits on protocol fields — attestation documents, encrypted responses, composite keys (Requirements 4A.8, 15.8; Property 38), shell injection prevention via `concurrency_count` regex validation and environment variable passing (Requirements 1.15, 1.16; Property 40), server URL allowlist (Requirement 1.17; Property 41), and Markdown escaping in job summaries (Requirement 7.9; Property 42).

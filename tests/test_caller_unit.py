@@ -4135,3 +4135,94 @@ class TestMarkdownEscapingInJobSummary:
         assert len(parts) == 7, (
             f"Table row must have 5 columns; raw pipe from exec_id leaked: {data_rows[0]!r}"
         )
+
+
+class TestExecuteHTTP400InvalidScriptPath:
+    """Unit tests for HTTP 400 invalid script path handling in execute().
+    Validates: Requirement 3.20"""
+
+    def test_http_400_with_script_path_keyword_raises_invalid_path_error(self):
+        """HTTP 400 with 'script_path' in body raises CallerError with invalid script path message.
+        Validates: Requirement 3.20"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+        mock_resp = type(
+            "MockResp",
+            (),
+            {
+                "status_code": 400,
+                "text": '{"detail": "script_path must be a relative path"}',
+                "json": lambda self: {"detail": "script_path must be a relative path"},
+            },
+        )()
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "/absolute/path.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "invalid" in exc_info.value.message.lower() or "script path" in exc_info.value.message.lower()
+
+    def test_http_400_with_absolute_keyword_raises_invalid_path_error(self):
+        """HTTP 400 with 'absolute' in body raises CallerError with invalid script path message.
+        Validates: Requirement 3.20"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+        mock_resp = type(
+            "MockResp",
+            (),
+            {
+                "status_code": 400,
+                "text": '{"detail": "absolute paths are not allowed"}',
+                "json": lambda self: {"detail": "absolute paths are not allowed"},
+            },
+        )()
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "/etc/passwd", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "invalid" in exc_info.value.message.lower() or "script path" in exc_info.value.message.lower()
+
+    def test_http_400_with_null_byte_keyword_raises_invalid_path_error(self):
+        """HTTP 400 with 'null byte' in body raises CallerError with invalid script path message.
+        Validates: Requirement 3.20"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+        mock_resp = type(
+            "MockResp",
+            (),
+            {
+                "status_code": 400,
+                "text": '{"detail": "script_path contains a null byte"}',
+                "json": lambda self: {"detail": "script_path contains a null byte"},
+            },
+        )()
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "scripts/build\x00.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "invalid" in exc_info.value.message.lower() or "script path" in exc_info.value.message.lower()
+
+    def test_http_400_with_duplicate_nonce_body_raises_duplicate_nonce_error(self):
+        """HTTP 400 with duplicate nonce body still raises CallerError with duplicate nonce message.
+        Validates: Requirement 3.18 (regression: must not be misclassified as invalid path)"""
+        caller = _make_caller()
+        caller._oidc_token = "test-token"
+        _setup_encryption_for_caller(caller)
+        mock_resp = type(
+            "MockResp",
+            (),
+            {
+                "status_code": 400,
+                "text": '{"detail": "duplicate nonce detected (replay attack)"}',
+                "json": lambda self: {"detail": "duplicate nonce detected (replay attack)"},
+            },
+        )()
+        with patch("call_remote_executor.caller.requests.post", return_value=mock_resp):
+            with pytest.raises(CallerError) as exc_info:
+                caller.execute("https://github.com/o/r", "abc", "scripts/build.sh", "ghp_x")
+        assert exc_info.value.phase == "execute"
+        assert "duplicate" in exc_info.value.message.lower() or "nonce" in exc_info.value.message.lower()
+        # Must NOT be classified as an invalid script path error
+        assert "script path is invalid" not in exc_info.value.message.lower()

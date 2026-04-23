@@ -397,11 +397,25 @@ class RemoteExecutorCaller:
         response = self._request_with_retry("POST", url, phase="execute", json=envelope, timeout=self.timeout)
 
         if response.status_code == 400:
-            # Check for duplicate nonce (anti-replay) error
+            # Inspect the response body to distinguish error types
             body_text = response.text.lower()
+            # Check for duplicate nonce (anti-replay) error first
             if "nonce" in body_text and ("duplicate" in body_text or "replay" in body_text):
                 raise CallerError(
                     message="Nonce rejected as duplicate (anti-replay): server returned HTTP 400",
+                    phase="execute",
+                    details={"status_code": 400, "body": response.text},
+                )
+            # Check for invalid script path error (absolute path or null byte)
+            _PATH_KEYWORDS = ("script_path", "invalid", "absolute", "path", "null byte")
+            if any(kw in body_text for kw in _PATH_KEYWORDS):
+                # Try to extract a human-readable detail from the JSON body
+                try:
+                    error_detail = response.json().get("detail") or response.json().get("message") or response.text
+                except (ValueError, KeyError):
+                    error_detail = response.text
+                raise CallerError(
+                    message=f"Script path is invalid: {error_detail}",
                     phase="execute",
                     details={"status_code": 400, "body": response.text},
                 )
