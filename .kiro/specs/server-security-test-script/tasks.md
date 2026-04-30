@@ -6,8 +6,8 @@ Implement a bash security-checks script and a Python output parser for the Remot
 
 ## Tasks
 
-- [ ] 1. Create the security checks bash script
-  - [ ] 1.1 Create `scripts/security-checks.sh` with header, helper functions, and output framework
+- [x] 1. Create the security checks bash script
+  - [x] 1.1 Create `scripts/security-checks.sh` with header, helper functions, and output framework
     - Add shebang, `set -uo pipefail` (no `-e`)
     - Implement `report_result` function that outputs `SECURITY_CHECK:<category>:<check_name>:<status>:<detail>`
     - Implement `check_tool` helper for tool availability detection
@@ -15,7 +15,7 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Implement summary output and exit code logic at script end
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
-  - [ ] 1.2 Implement network isolation checks
+  - [x] 1.2 Implement network isolation checks
     - Add `check_network_isolation` function
     - Check DNS resolution failure (`timeout 3 nslookup example.com`)
     - Check TCP connection failure (`timeout 3 bash -c 'echo > /dev/tcp/1.1.1.1/443'`)
@@ -23,7 +23,7 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Use `check_tool` for `nslookup` and `ip`, report SKIP if missing
     - _Requirements: 1.1, 1.2, 1.3, 9.1_
 
-  - [ ] 1.3 Implement filesystem isolation checks
+  - [x] 1.3 Implement filesystem isolation checks
     - Add `check_filesystem_isolation` function
     - Check root filesystem is read-only (`touch /root-write-test`)
     - Check /tmp is writable (`touch /tmp/write-test && rm /tmp/write-test`)
@@ -31,7 +31,7 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Check /tmp tmpfs size limit ≤ 64 MB (`df -m /tmp`)
     - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
-  - [ ] 1.4 Implement capability and privilege checks
+  - [x] 1.4 Implement capability and privilege checks
     - Add `check_capabilities` function
     - Check running as nobody user UID 65534 (`id -u`)
     - Check all capability sets are zero (`grep Cap /proc/self/status`)
@@ -39,26 +39,26 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Check NoNewPrivs flag is set to 1 (`grep NoNewPrivs /proc/self/status`)
     - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
-  - [ ] 1.5 Implement resource limits checks
+  - [x] 1.5 Implement resource limits checks
     - Add `check_resource_limits` function
     - Check memory limit from cgroup v2 (`/sys/fs/cgroup/memory.max`) with v1 fallback
     - Check CPU limit from cgroup v2 (`/sys/fs/cgroup/cpu.max`) with v1 fallback
     - Report SKIP if neither cgroup interface is found
     - _Requirements: 4.1, 4.2, 9.1_
 
-  - [ ] 1.6 Implement process isolation checks
+  - [x] 1.6 Implement process isolation checks
     - Add `check_process_isolation` function
     - Check visible process count is small (< 10 PIDs in /proc)
     - Check PID 1 is bash entrypoint (`cat /proc/1/cmdline`)
     - _Requirements: 5.1, 5.2_
 
-  - [ ] 1.7 Implement host-level hardening checks
+  - [x] 1.7 Implement host-level hardening checks
     - Add `check_host_hardening` function
     - Check host /health endpoint unreachable (`timeout 3 bash -c 'echo > /dev/tcp/172.17.0.1/8080'`)
     - Check no sensitive environment variables (GITHUB_TOKEN, OIDC, AWS credentials)
     - _Requirements: 6.1, 6.2_
 
-  - [ ] 1.8 Implement attestation isolation checks
+  - [x] 1.8 Implement attestation isolation checks
     - Add `check_attestation_isolation` function
     - Check /dev/nsm device absent (`test -e /dev/nsm`)
     - Check nitro-tpm-attest binary absent (`which nitro-tpm-attest`)
