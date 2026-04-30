@@ -67,12 +67,12 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Check attestation Python modules not importable (`python3 -c 'import cbor2'`, `python3 -c 'import wolfcrypt'`)
     - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
 
-- [ ] 2. Checkpoint - Verify bash script structure
+- [x] 2. Checkpoint - Verify bash script structure
   - Ensure the script is syntactically valid (`bash -n scripts/security-checks.sh`)
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 3. Create the Python output parser module
-  - [ ] 3.1 Create `scripts/security_check_parser.py` with data models and parse functions
+- [x] 3. Create the Python output parser module
+  - [x] 3.1 Create `scripts/security_check_parser.py` with data models and parse functions
     - Define `SecurityCheckResult`, `SecuritySummary`, and `SecurityHeader` dataclasses
     - Implement `parse_check_line(line: str) -> SecurityCheckResult | None`
     - Implement `parse_summary_line(line: str) -> SecuritySummary | None`
