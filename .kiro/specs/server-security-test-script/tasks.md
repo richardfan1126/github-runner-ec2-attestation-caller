@@ -107,8 +107,8 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Format as SECURITY_SUMMARY line, parse with `parse_summary_line`, assert values match
     - **Validates: Requirements 7.2**
 
-- [ ] 5. Create unit tests for the output parser
-  - [ ] 5.1 Write unit tests for parser edge cases and format validation
+- [x] 5. Create unit tests for the output parser
+  - [x] 5.1 Write unit tests for parser edge cases and format validation
     - Test header line parsing (valid and malformed)
     - Test check line with extra colons in detail message
     - Test check line with missing fields
@@ -118,7 +118,7 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Create test file at `tests/test_security_check_parser_unit.py`
     - _Requirements: 7.1, 7.2, 9.2_
 
-- [ ] 6. Final checkpoint - Ensure all tests pass
+- [x] 6. Final checkpoint - Ensure all tests pass
   - Run `pytest tests/test_security_check_parser_properties.py tests/test_security_check_parser_unit.py`
   - Ensure all tests pass, ask the user if questions arise.
 
