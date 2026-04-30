@@ -82,26 +82,26 @@ Implement a bash security-checks script and a Python output parser for the Remot
     - Implement `determine_exit_code(results: list[SecurityCheckResult]) -> int`
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
-- [ ] 4. Create property-based tests for the output parser
-  - [ ] 4.1 Write property test for output line format round-trip
+- [x] 4. Create property-based tests for the output parser
+  - [x] 4.1 Write property test for output line format round-trip
     - **Property 1: Output line format round-trip**
     - Generate arbitrary valid category, check_name, status, and detail (no newlines)
     - Format as SECURITY_CHECK line, parse with `parse_check_line`, assert fields match
     - **Validates: Requirements 7.1**
 
-  - [ ] 4.2 Write property test for summary arithmetic consistency
+  - [x] 4.2 Write property test for summary arithmetic consistency
     - **Property 2: Summary arithmetic consistency**
     - Generate arbitrary list of `SecurityCheckResult` objects
     - Call `compute_summary`, assert total == len(list), passed == count(PASS), failed == count(FAIL), total >= passed + failed
     - **Validates: Requirements 7.2**
 
-  - [ ] 4.3 Write property test for exit code correctness
+  - [x] 4.3 Write property test for exit code correctness
     - **Property 3: Exit code correctness**
     - Generate arbitrary list of `SecurityCheckResult` objects
     - Call `determine_exit_code`, assert returns 0 iff no FAIL in list, non-zero if any FAIL
     - **Validates: Requirements 7.3, 7.4**
 
-  - [ ] 4.4 Write property test for summary line format round-trip
+  - [x] 4.4 Write property test for summary line format round-trip
     - **Property 4: Summary line format round-trip**
     - Generate arbitrary valid total, passed, failed (non-negative, total >= passed + failed)
     - Format as SECURITY_SUMMARY line, parse with `parse_summary_line`, assert values match
